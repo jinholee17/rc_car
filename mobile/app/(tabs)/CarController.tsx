@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -9,91 +9,9 @@ import {
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 
-// TODO: adjust to your actual IP / port OR WebSocket bridge
-const ARDUINO_IP = '192.168.12.204';
-const ARDUINO_PORT = 8080;
-const WS_URL = `ws://${ARDUINO_IP}:${ARDUINO_PORT}`;
-
-// ---------------- Connection hook ----------------
-
-type CarConnection = {
-  send: (msg: string) => void;
-  isConnected: boolean;
-  lastError: string | null;
-};
-
-function useCarConnection(): CarConnection {
-  const [socket, setSocket] = useState<WebSocket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [lastError, setLastError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-
-    ws.onopen = () => {
-      setIsConnected(true);
-      setLastError(null);
-      console.log('Connected to Arduino over WiFi');
-    };
-
-    ws.onmessage = (event) => {
-      console.log('From Arduino:', event.data);
-    };
-
-    ws.onerror = (event) => {
-      console.log('WebSocket error', event);
-      setLastError('WebSocket error');
-    };
-
-    ws.onclose = (event) => {
-      console.log('WebSocket closed', event.code, event.reason);
-      setIsConnected(false);
-    };
-
-    setSocket(ws);
-
-    return () => {
-      ws.close();
-    };
-  }, []);
-
-  const send = useCallback(
-    (msg: string) => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        console.log('Cannot send, socket not open');
-        return;
-      }
-      const toSend = msg.endsWith('\n') ? msg : msg + '\n';
-      socket.send(toSend);
-      console.log('Sent:', toSend.trim());
-    },
-    [socket],
-  );
-
-  return { send, isConnected, lastError };
-}
-
-// ------------- Protocol helpers (same as Python logic) -------------
-
-function buildPWM_UD(value: number): string[] {
-  if (value > 0) {
-    return [`PWM_UD 3 ${value}`];
-  }
-  if (value < 0) {
-    return [`PWM_UD 6 ${-value}`];
-  }
-  return ['PWM_UD 6 0', 'PWM_UD 3 0'];
-}
-
-function buildPWM_LR(value: number): string[] {
-  if (value > 0) {
-    return [`PWM_LR 5 ${value}`];
-  }
-  if (value < 0) {
-    return [`PWM_LR 11 ${-value}`];
-  }
-  return ['PWM_LR 11 0', 'PWM_LR 5 0'];
-}
+// Your Arduino HTTP server
+const ARDUINO_IP = '192.168.1.3'; // from Serial
+const PORT = 8080;
 
 // Helper: clamp a value to [-max, max]
 function clamp(val: number, max: number): number {
@@ -109,8 +27,6 @@ const KNOB_RADIUS = 28;
 const MAX_PWM = 255;
 
 const CarController: React.FC = () => {
-  const { send, isConnected, lastError } = useCarConnection();
-
   // Joystick state: offset from center in px
   const [stickX, setStickX] = useState(0);
   const [stickY, setStickY] = useState(0);
@@ -124,30 +40,34 @@ const CarController: React.FC = () => {
   const lastSentLR = useRef<number>(0);
 
   const connectionLabel = useMemo(() => {
-    if (isConnected) return 'Connected';
-    if (lastError) return `Disconnected (${lastError})`;
-    return 'Connecting...';
-  }, [isConnected, lastError]);
+    return `Sending commands via HTTP to http://${ARDUINO_IP}:${PORT}/drive`;
+  }, []);
 
+  // Send HTTP request to Arduino /drive endpoint
   const sendControlCommands = useCallback(
-    (ud: number, lr: number) => {
-      // Only send when changed a bit (to reduce traffic)
-      const changedUD = Math.abs(ud - lastSentUD.current) >= 3;
-      const changedLR = Math.abs(lr - lastSentLR.current) >= 3;
+    async (ud: number, lr: number) => {
+      const udClamped = clamp(ud, MAX_PWM);
+      const lrClamped = clamp(lr, MAX_PWM);
 
-      if (changedUD) {
-        const udCommands = buildPWM_UD(ud);
-        udCommands.forEach((cmd) => send(cmd));
-        lastSentUD.current = ud;
+      // optional: don't spam identical values
+      if (
+        Math.abs(udClamped - lastSentUD.current) < 3 &&
+        Math.abs(lrClamped - lastSentLR.current) < 3
+      ) {
+        return;
       }
 
-      if (changedLR) {
-        const lrCommands = buildPWM_LR(lr);
-        lrCommands.forEach((cmd) => send(cmd));
-        lastSentLR.current = lr;
+      lastSentUD.current = udClamped;
+      lastSentLR.current = lrClamped;
+
+      const url = `http://${ARDUINO_IP}:${PORT}/drive?ud=${udClamped}&lr=${lrClamped}`;
+      try {
+        await fetch(url);
+      } catch (e) {
+        console.log('Error sending drive command:', e);
       }
     },
-    [send],
+    [],
   );
 
   // Map joystick position → PWM values
@@ -217,12 +137,7 @@ const CarController: React.FC = () => {
     <View style={styles.container}>
       <Text style={styles.title}>RC Car Controller</Text>
 
-      <Text
-        style={[
-          styles.connectionStatus,
-          isConnected ? styles.connected : styles.disconnected,
-        ]}
-      >
+      <Text style={[styles.connectionStatus, styles.connected]}>
         {connectionLabel}
       </Text>
 
@@ -230,7 +145,7 @@ const CarController: React.FC = () => {
       <View style={styles.joystickSection}>
         <Text style={styles.sectionLabel}>Joystick</Text>
         <Text style={styles.sectionSubLabel}>
-          Up/Down = Throttle &nbsp;•&nbsp; Left/Right = Steering
+          Up/Down = Throttle • Left/Right = Steering
         </Text>
 
         <View style={styles.joystickOuter} {...panResponder.panHandlers}>
@@ -301,15 +216,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   connectionStatus: {
-    fontSize: 14,
-    marginBottom: 24,
+    fontSize: 12,
+    marginBottom: 16,
     textAlign: 'center',
   },
   connected: {
-    color: '#4CAF50',
-  },
-  disconnected: {
-    color: '#FF5252',
+    color: '#9CA3AF',
   },
   joystickSection: {
     padding: 16,
