@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -87,9 +87,9 @@ const CarController: React.FC = () => {
 
       setPwmUD(newUD);
       setPwmLR(newLR);
-      sendControlCommands(newUD, newLR);
+      // sendControlCommands(newUD, newLR);
     },
-    [sendControlCommands],
+    // [sendControlCommands],
   );
 
   const panResponder = useMemo(
@@ -127,11 +127,20 @@ const CarController: React.FC = () => {
           setStickY(0);
           setPwmUD(0);
           setPwmLR(0);
-          sendControlCommands(0, 0);
+          // sendControlCommands(0, 0);
         },
       }),
-    [sendControlCommands, updateFromStick],
+    [updateFromStick],
   );
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // send whatever the current joystick state is
+      sendControlCommands(pwmUD, pwmLR);
+  }, 100); // 100 ms → 10 times per second
+
+  return () => clearInterval(interval);
+}, [pwmUD, pwmLR, sendControlCommands]);
+
 
   return (
     <View style={styles.container}>
