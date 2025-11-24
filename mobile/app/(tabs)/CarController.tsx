@@ -10,7 +10,7 @@ import {
 import Slider from '@react-native-community/slider';
 
 // Your Arduino HTTP server
-const ARDUINO_IP = '192.168.1.3'; // from Serial
+const ARDUINO_IP = '192.168.1.202'; // from Serial
 const PORT = 8080;
 
 // Helper: clamp a value to [-max, max]
@@ -115,11 +115,11 @@ const CarController: React.FC = () => {
         },
         onPanResponderRelease: () => {
           // Snap back to center and send neutral
-          setStickX(0);
-          setStickY(0);
-          setPwmUD(0);
-          setPwmLR(0);
-          sendControlCommands(0, 0);
+          // setStickX(0);
+          // setStickY(0);
+          // setPwmUD(0);
+          // setPwmLR(0);
+          // sendControlCommands(0, 0);
         },
         onPanResponderTerminate: () => {
           // Also reset if gesture is interrupted
