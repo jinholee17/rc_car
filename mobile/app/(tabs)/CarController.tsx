@@ -10,7 +10,7 @@ import {
 import Slider from '@react-native-community/slider';
 
 // Your Arduino HTTP server
-const ARDUINO_IP = '192.168.1.202'; // from Serial
+const ARDUINO_IP = '192.168.1.207'; // from Serial
 const PORT = 8080;
 
 // Helper: clamp a value to [-max, max]
