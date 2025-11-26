@@ -6,6 +6,10 @@
 // ===========================
 #include "board_config.h"
 
+// WIFIII
+const char* ssid = "Anika-iPhone";  //change to 2g wifi
+const char* password = "12345678";  //  password
+
 void startCameraServer();
 void setupLedFlash();
 
@@ -50,7 +54,7 @@ void setup() {
   // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
     return;
   }
 
@@ -58,22 +62,39 @@ void setup() {
   setupLedFlash();
 #endif
 
-  // ---- AP MODE ----
-  Serial.println("Starting AP Mode...");
+  // ---- STA MODE (Hotspot) ----
+  Serial.println("Starting STA Mode...");
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(ssid, password);
 
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP("ESP32-CAM", "12345678");   // AP name and password
+  Serial.print("Connecting to iPhone hotspot");
+  unsigned long startAttempt = millis();
 
-  Serial.print("AP IP address: ");
-  Serial.println(WiFi.softAPIP());
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  Serial.println();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.print("WiFi FAILED. Status code: ");
+    Serial.println(WiFi.status());
+    return;
+  }
+
+  Serial.println("WiFi connected!");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
 
   startCameraServer();
 
-  Serial.print("Camera Ready! Connect to WiFi 'ESP32-CAM' and open: http://");
-  Serial.print(WiFi.softAPIP());
-  Serial.println();
+  Serial.print("Camera Ready! Open: http://");
+  Serial.print(WiFi.localIP());
+  Serial.println("/stream");
 }
 
 void loop() {
-  delay(10000);
+  delay(10);
 }

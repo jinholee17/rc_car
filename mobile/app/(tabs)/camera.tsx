@@ -2,12 +2,12 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-const CAMERA_URL = 'http://192.168.4.1'; // <- replace with your ESP32 IP
+const CAMERA_URL = 'http://172.20.10.4'; // <- replace with your ESP32 IP
 
 export default function CameraScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Backup Camera</Text>
+      <Text style={styles.title}>Camera</Text>
 
       <View style={styles.webviewContainer}>
         <WebView
