@@ -2,8 +2,11 @@
 #include <Servo.h>
 #include "rc_car.h"
 
-const char* ssid     = "blasia";
-const char* password = "Welcometoblasia25";
+// const char* ssid     = "blasia";
+// const char* password = "Welcometoblasia25";
+
+const char* ssid     = "Brown Bear";
+const char* password = "BbBbWDYS?3";
 
 // Ultrasonic (moved off 9 so servo can use 9)
 const int trigPin = 7;
@@ -12,8 +15,8 @@ const int echoPin = 8;
 float duration, distance;
 
 // Drive motor pins (you can leave these for later)
-const int PIN_UD_FORWARD = 3;  // PWM_UD 3
-const int PIN_UD_BACK    = 6;  // PWM_UD 6
+const int PIN_UD_FORWARD = 8;  // PWM_UD 3
+const int PIN_UD_BACK    = 12;  // PWM_UD 6
 
 // Servo for steering
 const int SERVO_PIN = 9;
@@ -56,14 +59,20 @@ void setThrottle(int ud) {
   ud = clamp(ud, -255, 255);
 
   if (ud > 0) {
-    analogWrite(PIN_UD_FORWARD, ud);
-    analogWrite(PIN_UD_BACK, 0);
+    // analogWrite(PIN_UD_FORWARD, ud);
+    // analogWrite(PIN_UD_BACK, 0);
+    digitalWrite(PIN_UD_FORWARD, HIGH);
+    digitalWrite(PIN_UD_BACK, LOW);
   } else if (ud < 0) {
-    analogWrite(PIN_UD_BACK, -ud);
-    analogWrite(PIN_UD_FORWARD, 0);
+    // analogWrite(PIN_UD_BACK, -ud);
+    // analogWrite(PIN_UD_FORWARD, 0);
+    digitalWrite(PIN_UD_FORWARD, LOW);
+    digitalWrite(PIN_UD_BACK, HIGH);
   } else {
-    analogWrite(PIN_UD_FORWARD, 0);
-    analogWrite(PIN_UD_BACK, 0);
+    // analogWrite(PIN_UD_FORWARD, 0);
+    // analogWrite(PIN_UD_BACK, 0);
+    digitalWrite(PIN_UD_FORWARD, LOW);
+    digitalWrite(PIN_UD_BACK, LOW);
   }
 }
 
@@ -98,6 +107,8 @@ void setup() {
 
   pinMode(PIN_UD_FORWARD, OUTPUT);
   pinMode(PIN_UD_BACK, OUTPUT);
+  digitalWrite(PIN_UD_FORWARD, LOW);
+  digitalWrite(PIN_UD_BACK, LOW);
 
   // Servo on pin 9
   steeringServo.attach(SERVO_PIN);
@@ -198,7 +209,7 @@ void loop() {
     Serial.print("Throttle command (ud): ");
     Serial.println(ud);
     // If you want to enable later:
-    // setThrottle(ud);
+    setThrottle(ud);
   }
 
   // Steering: use lr to move servo
