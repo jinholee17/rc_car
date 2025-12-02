@@ -92,7 +92,6 @@ void setup() {
 
   Serial.print("Camera Ready! Open: http://");
   Serial.print(WiFi.localIP());
-  Serial.println("/stream");
 }
 
 void loop() {
