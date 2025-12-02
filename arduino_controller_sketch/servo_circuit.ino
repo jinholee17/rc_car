@@ -5,8 +5,8 @@
 // const char* ssid     = "blasia";
 // const char* password = "Welcometoblasia25";
 
-const char* ssid     = "Brown Bear";
-const char* password = "BbBbWDYS?3";
+const char* ssid     =  "Verizon_FYCW9R"; //"Brown Bear";
+const char* password =  "mavis4-dun-fax"; //BbBbWDYS?3";
 
 // Ultrasonic (moved off 9 so servo can use 9)
 const int trigPin = 7;
@@ -17,6 +17,7 @@ float duration, distance;
 // Drive motor pins (you can leave these for later)
 const int PIN_UD_FORWARD = 8;  // PWM_UD 3
 const int PIN_UD_BACK    = 12;  // PWM_UD 6
+const int SPEED_PIN = 11;
 
 // Servo for steering
 const int SERVO_PIN = 9;
@@ -57,20 +58,16 @@ int clamp(int val, int minVal, int maxVal) {
 void setThrottle(int ud) {
   // ud in [-255, 255]. >0 = forward, <0 = backward
   ud = clamp(ud, -255, 255);
+  int speed = map(abs(ud), 0, 255, 255, 0);
 
+  analogWrite(SPEED_PIN, speed);
   if (ud > 0) {
-    // analogWrite(PIN_UD_FORWARD, ud);
-    // analogWrite(PIN_UD_BACK, 0);
     digitalWrite(PIN_UD_FORWARD, HIGH);
     digitalWrite(PIN_UD_BACK, LOW);
   } else if (ud < 0) {
-    // analogWrite(PIN_UD_BACK, -ud);
-    // analogWrite(PIN_UD_FORWARD, 0);
     digitalWrite(PIN_UD_FORWARD, LOW);
     digitalWrite(PIN_UD_BACK, HIGH);
   } else {
-    // analogWrite(PIN_UD_FORWARD, 0);
-    // analogWrite(PIN_UD_BACK, 0);
     digitalWrite(PIN_UD_FORWARD, LOW);
     digitalWrite(PIN_UD_BACK, LOW);
   }
@@ -83,7 +80,7 @@ void setSteeringFromLR(int lr) {
   lr = clamp(lr, -255, 255);
 
   // Map [-255, 255] → [-90, 90]
-  int angleOffset = map(lr, -255, 255, -90, 90);
+  int angleOffset = map(lr, -255, 255, -45, 45);
 
   // Servo.write expects 0..180; +90 recenters
   int servoAngle = angleOffset + 90;
