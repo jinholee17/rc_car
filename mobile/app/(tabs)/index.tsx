@@ -114,12 +114,20 @@ const MP3Player: React.FC = () => {
     sendMP3Command('play');
   };
 
-  const handleNext = () => {
-    sendMP3Command('next');
+  const handleNext = async () => {
+    try {
+      await sendMP3Command('next');
+    } catch (error) {
+      console.log('Error in handleNext:', error);
+    }
   };
 
-  const handlePrevious = () => {
-    sendMP3Command('previous');
+  const handlePrevious = async () => {
+    try {
+      await sendMP3Command('previous');
+    } catch (error) {
+      console.log('Error in handlePrevious:', error);
+    }
   };
 
   // Send volume command to Arduino
@@ -170,12 +178,11 @@ const MP3Player: React.FC = () => {
       <ThemedView style={styles.controlsContainer}>
         <TouchableOpacity
           style={[styles.controlButton, styles.secondaryButton]}
-          onPress={handlePrevious}
-          disabled={playerState.isLoading || playerState.currentTrack === 1}>
+          onPress={handlePrevious}>
           <MaterialIcons
             name="skip-previous"
             size={32}
-            color={playerState.currentTrack === 1 ? '#666' : '#FFFFFF'}
+            color="#FFFFFF"
           />
         </TouchableOpacity>
 
@@ -196,12 +203,11 @@ const MP3Player: React.FC = () => {
 
         <TouchableOpacity
           style={[styles.controlButton, styles.secondaryButton]}
-          onPress={handleNext}
-          disabled={playerState.isLoading || playerState.currentTrack === playerState.totalTracks}>
+          onPress={handleNext}>
           <MaterialIcons
             name="skip-next"
             size={32}
-            color={playerState.currentTrack === playerState.totalTracks ? '#666' : '#FFFFFF'}
+            color="#FFFFFF"
           />
         </TouchableOpacity>
       </ThemedView>
