@@ -26,11 +26,37 @@ WiFiServer server(8080);
 unsigned long lastPress = 0;
 const unsigned long debounceDelay = 250;
 bool isPaused = true;
-int currentVolume = 30; // 0-30 range for DFPlayer Mini 
+int currentVolume = 30; // 0-30 range for DFPlayer Mini
+int currentTrack = 1; // Track current playing track number
+
+// Track names - matches your MP3 filenames (without .mp3 extension)
+// Order matches the actual track order on your SD card
+const char* TRACK_NAMES[] = {
+  "deep in it by berlioz",            // Track 1
+  "I Am in Love by Jennifer Lara",    // Track 2
+  "Broccoli by Lil Yachty",           // Track 3
+  "We Found Love by Rihanna",         // Track 4
+  "Jukebox Joints by ASAP ROCKY",     // Track 5
+  "Fashion Killa by ASAP ROCKY",      // Track 6
+  "Pyramids by Frank Ocean",          // Track 7
+  "Where Are You 54 Ultra",           // Track 8
+};
+ 
+const int MAX_TRACKS = sizeof(TRACK_NAMES) / sizeof(TRACK_NAMES[0]); 
 
 
 void setup() {
+  // Start serial communication
   Serial.begin(9600);
+  // Wait for serial port to be ready (important for some boards)
+  while (!Serial && millis() < 3000) {
+    ; // wait for serial port to connect, timeout after 3 seconds
+  }
+  delay(1000); // Give serial monitor time to connect
+  
+  Serial.println("\n\n=== MP3 Player Starting ===");
+  Serial.println("Serial communication initialized");
+  
   softwareSerial.begin(9600);
 
   // BUTTON INPUTS 
@@ -44,6 +70,7 @@ void setup() {
     player.volume(currentVolume);
     player.pause();      //prevents autoplay
     player.play(1);     // start first track
+    currentTrack = 1;   // Set initial track
     player.pause();     // pause 
     isPaused = true;    // confirm pause state
   } 
@@ -97,22 +124,53 @@ void setup() {
   Serial.println();
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nWiFi connection failed! Check:");
-    Serial.print("1. Network name: \"");
+    Serial.println("\nWiFi connection failed!");
+    Serial.print("Status code: ");
+    int status = WiFi.status();
+    Serial.println(status);
+    
+    // Decode status code
+    if (status == 1) {
+      Serial.println("WL_IDLE_STATUS: WiFi is in idle mode");
+    } else if (status == 2) {
+      Serial.println("WL_NO_SSID_AVAIL: Network name not found!");
+      Serial.println("This means the network \"Anika-iPhone\" is not visible.");
+    } else if (status == 3) {
+      Serial.println("WL_SCAN_COMPLETED: Scan completed");
+    } else if (status == 4) {
+      Serial.println("WL_CONNECTED: Connected (shouldn't see this)");
+    } else if (status == 5) {
+      Serial.println("WL_CONNECT_FAILED: Connection failed");
+    } else if (status == 6) {
+      Serial.println("WL_CONNECTION_LOST: Connection lost");
+    } else if (status == 7) {
+      Serial.println("WL_DISCONNECTED: Disconnected");
+    }
+    
+    Serial.println("\nTroubleshooting steps:");
+    Serial.print("1. Network name (case-sensitive): \"");
     Serial.print(ssid);
     Serial.println("\"");
-    Serial.println("2. Password is correct (8+ characters)");
-    Serial.println("3. Network is in range");
-    Serial.println("4. For iPhone hotspot:");
-    Serial.println("   - Settings > Personal Hotspot > ON");
-    Serial.println("   - Keep phone unlocked");
-    Serial.println("   - Make sure 'Maximize Compatibility' is ON");
-    Serial.print("5. WiFi status code: ");
-    Serial.println(WiFi.status());
+    Serial.println("2. For iPhone hotspot:");
+    Serial.println("   - Go to Settings > Personal Hotspot");
+    Serial.println("   - Turn ON 'Allow Others to Join'");
+    Serial.println("   - Enable 'Maximize Compatibility' (important!)");
+    Serial.println("   - Keep phone unlocked and nearby");
+    Serial.println("   - Check the exact network name matches");
+    Serial.println("3. Try restarting the hotspot");
+    Serial.println("4. Make sure no other device is using the hotspot");
     
     if (!foundNetwork) {
-      Serial.println("\nWARNING: Target network not found in scan!");
-      Serial.println("Double-check the network name (case-sensitive).");
+      Serial.println("\n⚠️  WARNING: Target network \"Anika-iPhone\" NOT found in scan!");
+      Serial.println("   This means the hotspot is not visible to Arduino.");
+      Serial.println("   Solutions:");
+      Serial.println("   1. Enable 'Maximize Compatibility' in iPhone hotspot settings");
+      Serial.println("   2. Restart the hotspot");
+      Serial.println("   3. Check network name matches exactly (case-sensitive)");
+      Serial.println("   4. Keep phone unlocked and within range");
+    } else {
+      Serial.println("\n✓ Network found in scan, but connection failed.");
+      Serial.println("   Check password and try again.");
     }
     
     Serial.println("\nContinuing anyway - buttons will still work, but app won't connect.");
@@ -148,26 +206,69 @@ String getParamValue(const String &query, const String &name) {
 // Handle MP3 commands (used by both buttons and HTTP)
 void handlePlayPause() {
   if (isPaused) {
-    Serial.println("RESUME");
+    Serial.println("[MP3] RESUME");
     player.start();
     isPaused = false;
+    // Don't read from DFPlayer when resuming - keep current track
   } else {
-    Serial.println("PAUSE");
+    Serial.println("[MP3] PAUSE");
     player.pause();
     isPaused = true;
+    // When pausing, we can safely read from DFPlayer to sync
+    delay(100);
+    int actualTrack = player.readCurrentFileNumber();
+    if (actualTrack > 0 && actualTrack <= MAX_TRACKS) {
+      currentTrack = actualTrack;
+      Serial.print("[MP3] Synced track on pause: ");
+      Serial.println(currentTrack);
+    }
   }
 }
 
 void handleNext() {
-  Serial.println("Next");
+  Serial.println("[MP3] Next track");
   player.next();
   isPaused = false;
+  // Read actual track number from DFPlayer after a short delay
+  delay(150); // Small delay to let DFPlayer update
+  int actualTrack = player.readCurrentFileNumber();
+  if (actualTrack > 0 && actualTrack <= MAX_TRACKS) {
+    currentTrack = actualTrack;
+    Serial.print("[MP3] Now on track: ");
+    Serial.println(currentTrack);
+  } else if (actualTrack > MAX_TRACKS) {
+    // If track number exceeds max, it might have looped
+    currentTrack = 1;
+  } else {
+    // Fallback: increment if read fails
+    currentTrack++;
+    if (currentTrack > MAX_TRACKS) {
+      currentTrack = 1; // Loop back to start
+    }
+  }
 }
 
 void handlePrevious() {
-  Serial.println("Previous");
+  Serial.println("[MP3] Previous track");
   player.previous();
   isPaused = false;
+  // Read actual track number from DFPlayer after a short delay
+  delay(150); // Small delay to let DFPlayer update
+  int actualTrack = player.readCurrentFileNumber();
+  if (actualTrack > 0 && actualTrack <= MAX_TRACKS) {
+    currentTrack = actualTrack;
+    Serial.print("[MP3] Now on track: ");
+    Serial.println(currentTrack);
+  } else if (actualTrack == 0 || actualTrack > MAX_TRACKS) {
+    // If at start or exceeded, might have looped to end
+    currentTrack = MAX_TRACKS;
+  } else {
+    // Fallback: decrement if read fails
+    currentTrack--;
+    if (currentTrack < 1) {
+      currentTrack = MAX_TRACKS; // Loop to end
+    }
+  }
 }
 
 void handleVolume(int volume) {
@@ -177,57 +278,73 @@ void handleVolume(int volume) {
   
   currentVolume = volume;
   player.volume(volume);
-  Serial.print("Volume set to: ");
+  Serial.print("[MP3] Volume set to: ");
   Serial.println(volume);
 }
 
 void loop() {
   unsigned long now = millis();
 
-  // Check physical buttons
-  if (digitalRead(BTN_PLAY) == LOW && (now - lastPress > debounceDelay)) {
-    lastPress = now;
-    handlePlayPause();
-  }
-
-  if (digitalRead(BTN_NEXT) == LOW && (now - lastPress > debounceDelay)) {
-    lastPress = now;
-    handleNext();
-  }
-
-  if (digitalRead(BTN_PREV) == LOW && (now - lastPress > debounceDelay)) {
-    lastPress = now;
-    handlePrevious();
+  // Check physical buttons (with debounce)
+  if (now - lastPress > debounceDelay) {
+    if (digitalRead(BTN_PLAY) == LOW) {
+      lastPress = now;
+      handlePlayPause(); // Toggle play/pause
+    }
+    if (digitalRead(BTN_NEXT) == LOW) {
+      lastPress = now;
+      handleNext();
+    }
+    if (digitalRead(BTN_PREV) == LOW) {
+      lastPress = now;
+      handlePrevious();
+    }
   }
 
   // Handle HTTP requests from mobile app
   WiFiClient client = server.available();
   if (client) {
-    Serial.println("Client connected!");
-
-    // Read the first HTTP request line
     String requestLine = client.readStringUntil('\r');
-    Serial.print("Request: ");
-    Serial.println(requestLine);
+    String pathAndQuery = "";
 
     // Clear the rest of the HTTP headers
     while (client.available()) {
-      String headerLine = client.readStringUntil('\r');
-      if (headerLine == "\n" || headerLine == "\r\n") {
-        break;
-      }
+      client.read();
     }
 
     // Parse path and query
     int getIndex = requestLine.indexOf("GET ");
     int httpIndex = requestLine.indexOf(" HTTP/");
     if (getIndex != -1 && httpIndex != -1) {
-      String pathAndQuery = requestLine.substring(getIndex + 4, httpIndex);
+      pathAndQuery = requestLine.substring(getIndex + 4, httpIndex);
 
       // Check if it's an MP3 command
       if (pathAndQuery.startsWith("/mp3")) {
         // Check for status endpoint (exact match or starts with /mp3/status)
         if (pathAndQuery == "/mp3/status" || pathAndQuery.startsWith("/mp3/status?")) {
+          // Only try to read from DFPlayer when paused - when playing, readCurrentFileNumber() is unreliable
+          // Trust our maintained currentTrack variable when playing
+          if (isPaused) {
+            // When paused, we can safely read from DFPlayer
+            int actualTrack = player.readCurrentFileNumber();
+            if (actualTrack > 0 && actualTrack <= MAX_TRACKS) {
+              currentTrack = actualTrack; // Update if we get a valid track number
+              Serial.print("[Status] Updated track from DFPlayer (paused): ");
+              Serial.println(currentTrack);
+            }
+            // If actualTrack is 0 or invalid, keep the current currentTrack value
+          } else {
+            // When playing, just use our currentTrack variable (don't read from DFPlayer)
+            Serial.print("[Status] Using maintained track (playing): ");
+            Serial.println(currentTrack);
+          }
+          
+          // Get track name
+          const char* trackName = "Unknown";
+          if (currentTrack >= 1 && currentTrack <= MAX_TRACKS) {
+            trackName = TRACK_NAMES[currentTrack - 1]; // Array is 0-indexed
+          }
+          
           // Return current state as JSON
           client.println("HTTP/1.1 200 OK");
           client.println("Content-Type: application/json");
@@ -237,6 +354,12 @@ void loop() {
           client.print(isPaused ? "false" : "true");
           client.print(",\"volume\":");
           client.print(currentVolume);
+          client.print(",\"currentTrack\":");
+          client.print(currentTrack);
+          client.print(",\"trackName\":\"");
+          client.print(trackName);
+          client.print("\",\"maxTracks\":");
+          client.print(MAX_TRACKS);
           client.println("}");
         } else {
           // Handle commands
@@ -248,45 +371,96 @@ void loop() {
 
           String cmd = getParamValue(query, "cmd");
           String volumeStr = getParamValue(query, "volume");
+          String trackStr = getParamValue(query, "track");
 
+          // Handle play specific track command
+          if (trackStr != "") {
+            int trackNum = trackStr.toInt();
+            if (trackNum >= 1 && trackNum <= MAX_TRACKS) {
+              Serial.print("[MP3] Play track: ");
+              Serial.println(trackNum);
+              player.play(trackNum);
+              currentTrack = trackNum; // Set track immediately - trust this value
+              isPaused = false;
+              // Don't try to verify with readCurrentFileNumber() - it's unreliable while playing
+              // and we know exactly which track we're playing
+              Serial.print("[MP3] Set currentTrack to: ");
+              Serial.println(currentTrack);
+              // Send response
+              client.println("HTTP/1.1 200 OK");
+              client.println("Content-Type: text/plain");
+              client.println("Connection: close");
+              client.println();
+              client.println("OK");
+            } else {
+              client.println("HTTP/1.1 400 Bad Request");
+              client.println("Content-Type: text/plain");
+              client.println("Connection: close");
+              client.println();
+              client.println("Invalid track number");
+            }
+          }
           // Handle volume command
-          if (volumeStr != "") {
+          else if (volumeStr != "") {
             int volume = volumeStr.toInt();
             handleVolume(volume);
-          }
-          // Handle other commands (case-insensitive by checking both cases)
-          else if (cmd == "play" || cmd == "Play" || cmd == "PLAY") {
-            handlePlayPause(); // Toggle play/pause
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("OK");
+          } else if (cmd == "play" || cmd == "Play" || cmd == "PLAY") {
+            handlePlayPause();
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("OK");
           } else if (cmd == "pause" || cmd == "Pause" || cmd == "PAUSE") {
             handlePlayPause(); // Toggle play/pause
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("OK");
           } else if (cmd == "next" || cmd == "Next" || cmd == "NEXT") {
             handleNext();
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("OK");
           } else if (cmd == "previous" || cmd == "Previous" || cmd == "PREVIOUS") {
             handlePrevious();
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("OK");
+          } else {
+            client.println("HTTP/1.1 400 Bad Request");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("Unknown command");
           }
-
-          // Send HTTP response
-          client.println("HTTP/1.1 200 OK");
-          client.println("Content-Type: text/plain");
-          client.println("Connection: close");
-          client.println();
-          client.println("OK");
         }
       } else {
-        // Unknown path
         client.println("HTTP/1.1 404 Not Found");
         client.println("Connection: close");
         client.println();
       }
     }
-
     delay(1);
     client.stop();
-    Serial.println("Client disconnected");
+    if (pathAndQuery.length() > 0 && !pathAndQuery.startsWith("/mp3/status")) {
+      Serial.print("[HTTP] Request: ");
+      Serial.println(requestLine);
+    }
   }
-
-  // Loop: if track has stopped and not because of pause, restart it
+  
+  // Keep player playing if not paused
   if (!isPaused && player.readState() == 0) {
-    player.start();  // restart same track
+    player.start();
   }
 }

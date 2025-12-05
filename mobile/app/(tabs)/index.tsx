@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
 import Slider from '@react-native-community/slider';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
@@ -9,45 +9,42 @@ import { ThemedView } from '@/components/themed-view';
 const ARDUINO_IP = '172.20.10.6'; // Update this to match your Arduino IP
 const PORT = 8080;
 
+// Track names - matches Arduino order
+const TRACK_NAMES: { [key: number]: string } = {
+  1: 'deep in it by berlioz',
+  2: 'I Am in Love by Jennifer Lara',
+  3: 'Broccoli by Lil Yachty',
+  4: 'We Found Love by Rihanna',
+  5: 'Jukebox Joints by ASAP ROCKY',
+  6: 'Fashion Killa',
+  7: 'Pyramids by Frank Ocean',
+  8: 'Where Are You 54 Ultra',
+};
+
+const TOTAL_TRACKS = 8;
+
+// Helper to get song name from track number
+const getSongName = (trackNumber: number): string => {
+  return TRACK_NAMES[trackNumber] || `Track ${trackNumber}`;
+};
+
 interface MP3PlayerState {
   isPlaying: boolean;
   currentTrack: number;
   totalTracks: number;
   isLoading: boolean;
   volume: number;
+  trackName?: string; // Track name from Arduino
 }
 
 const MP3Player: React.FC = () => {
   const [playerState, setPlayerState] = useState<MP3PlayerState>({
     isPlaying: false,
     currentTrack: 1,
-    totalTracks: 10, // You can update this based on actual number of tracks
+    totalTracks: TOTAL_TRACKS,
     isLoading: false,
     volume: 30, // DFPlayer Mini volume range: 0-30
   });
-
-  // Send HTTP request to Arduino for MP3 control
-  const sendMP3Command = useCallback(async (command: 'play' | 'pause' | 'next' | 'previous') => {
-    setPlayerState((prev) => ({ ...prev, isLoading: true }));
-    
-    const url = `http://${ARDUINO_IP}:${PORT}/mp3?cmd=${command}`;
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        setPlayerState((prev) => ({ ...prev, isLoading: false }));
-        // Fetch actual state from Arduino after command completes
-        setTimeout(() => {
-          fetchPlayerStatus();
-        }, 300);
-      } else {
-        setPlayerState((prev) => ({ ...prev, isLoading: false }));
-        console.log('Error: MP3 command failed');
-      }
-    } catch (error) {
-      console.log('Error sending MP3 command:', error);
-      setPlayerState((prev) => ({ ...prev, isLoading: false }));
-    }
-  }, [fetchPlayerStatus]);
 
   // Fetch current state from Arduino
   const fetchPlayerStatus = useCallback(async () => {
@@ -64,12 +61,23 @@ const MP3Player: React.FC = () => {
       
       if (response.ok) {
         const data = await response.json();
+        console.log('Status data:', data); // Debug: see what Arduino is sending
         setPlayerState((prev) => {
           // Only update if values actually changed (prevents unnecessary re-renders)
           const newIsPlaying = data.isPlaying === true;
           const newVolume = data.volume !== undefined ? data.volume : prev.volume;
+          const newTrack = data.currentTrack !== undefined ? data.currentTrack : prev.currentTrack;
+          const trackName = data.trackName || getSongName(newTrack);
           
-          if (prev.isPlaying === newIsPlaying && prev.volume === newVolume) {
+          console.log('Track name from Arduino:', data.trackName, 'Track number:', newTrack); // Debug
+          
+          // Always update trackName even if other values haven't changed
+          const shouldUpdate = prev.isPlaying !== newIsPlaying || 
+                               prev.volume !== newVolume || 
+                               prev.currentTrack !== newTrack ||
+                               prev.trackName !== trackName;
+          
+          if (!shouldUpdate) {
             return prev; // No change, return same state
           }
           
@@ -77,6 +85,8 @@ const MP3Player: React.FC = () => {
             ...prev,
             isPlaying: newIsPlaying,
             volume: newVolume,
+            currentTrack: newTrack,
+            trackName: trackName, // Store track name from Arduino
           };
         });
       }
@@ -85,6 +95,30 @@ const MP3Player: React.FC = () => {
       // If we can't connect, keep current state (don't reset)
     }
   }, []);
+
+  // Send HTTP request to Arduino for MP3 control
+  const sendMP3Command = useCallback(async (command: 'play' | 'pause' | 'next' | 'previous') => {
+    setPlayerState((prev) => ({ ...prev, isLoading: true }));
+    
+    const url = `http://${ARDUINO_IP}:${PORT}/mp3?cmd=${command}`;
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        setPlayerState((prev) => ({ ...prev, isLoading: false }));
+        // Fetch actual state from Arduino after command completes
+        // Give DFPlayer time to update track number
+        setTimeout(() => {
+          fetchPlayerStatus();
+        }, 400);
+      } else {
+        setPlayerState((prev) => ({ ...prev, isLoading: false }));
+        console.log('Error: MP3 command failed');
+      }
+    } catch (error) {
+      console.log('Error sending MP3 command:', error);
+      setPlayerState((prev) => ({ ...prev, isLoading: false }));
+    }
+  }, [fetchPlayerStatus]);
 
   // Sync state when app loads
   useEffect(() => {
@@ -104,30 +138,64 @@ const MP3Player: React.FC = () => {
           isPollingRef.current = false;
         });
       }
-    }, 2500); // Check every 2.5 seconds (less frequent = less lag)
+    }, 2000); // Check every 2 seconds for better responsiveness
 
     return () => clearInterval(pollInterval);
   }, [fetchPlayerStatus, playerState.isLoading]);
 
+  // Play a specific track
+  const playTrack = useCallback(async (trackNumber: number) => {
+    if (trackNumber < 1 || trackNumber > TOTAL_TRACKS) return;
+    
+    // Optimistically update UI immediately
+    setPlayerState((prev) => ({
+      ...prev,
+      currentTrack: trackNumber,
+      trackName: getSongName(trackNumber),
+      isPlaying: true,
+      isLoading: true,
+    }));
+    
+    const url = `http://${ARDUINO_IP}:${PORT}/mp3?track=${trackNumber}`;
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        setPlayerState((prev) => ({ ...prev, isLoading: false }));
+        // Sync state after playing track - give DFPlayer time to update
+        setTimeout(() => {
+          fetchPlayerStatus();
+        }, 500); // Increased delay to ensure DFPlayer has updated
+      } else {
+        setPlayerState((prev) => ({ ...prev, isLoading: false }));
+        // Re-fetch to get actual state
+        setTimeout(() => {
+          fetchPlayerStatus();
+        }, 300);
+      }
+    } catch (error) {
+      console.log('Error playing track:', error);
+      setPlayerState((prev) => ({ ...prev, isLoading: false }));
+      // Re-fetch to get actual state
+      setTimeout(() => {
+        fetchPlayerStatus();
+      }, 300);
+    }
+  }, [fetchPlayerStatus]);
+
   const handlePlayPause = () => {
+    if (playerState.isLoading) return; // Prevent multiple clicks
     // Send play command (Arduino toggles play/pause)
     sendMP3Command('play');
   };
 
-  const handleNext = async () => {
-    try {
-      await sendMP3Command('next');
-    } catch (error) {
-      console.log('Error in handleNext:', error);
-    }
+  const handleNext = () => {
+    if (playerState.isLoading) return; // Prevent multiple clicks
+    sendMP3Command('next');
   };
 
-  const handlePrevious = async () => {
-    try {
-      await sendMP3Command('previous');
-    } catch (error) {
-      console.log('Error in handlePrevious:', error);
-    }
+  const handlePrevious = () => {
+    if (playerState.isLoading) return; // Prevent multiple clicks
+    sendMP3Command('previous');
   };
 
   // Send volume command to Arduino
@@ -154,68 +222,115 @@ const MP3Player: React.FC = () => {
 
   return (
     <View style={styles.container}>
-      <ThemedText type="title" style={styles.title}>MP3 Player</ThemedText>
-      
-      <ThemedText style={styles.connectionStatus}>
-        Connected to: {ARDUINO_IP}:{PORT}
-      </ThemedText>
+      {/* Header */}
+      <View style={styles.header}>
+        <ThemedText type="title" style={styles.title}>Music</ThemedText>
+        <View style={styles.statusBadge}>
+          <View style={[styles.statusDot, playerState.isPlaying && styles.statusDotActive]} />
+          <ThemedText style={styles.statusText}>
+            {playerState.isPlaying ? 'Playing' : 'Paused'}
+          </ThemedText>
+        </View>
+      </View>
 
       {/* Current Track Display */}
-      <ThemedView style={styles.trackInfoContainer}>
+      <View style={styles.trackInfoContainer}>
         <ThemedText style={styles.trackLabel}>Now Playing</ThemedText>
-        <ThemedText style={styles.trackTitle}>
-          Track {playerState.currentTrack}
+        <ThemedText style={styles.trackTitle} numberOfLines={2}>
+          {playerState.trackName || getSongName(playerState.currentTrack)}
         </ThemedText>
         <ThemedText style={styles.trackSubtitle}>
-          {playerState.currentTrack} of {playerState.totalTracks}
+          Track {playerState.currentTrack}
         </ThemedText>
         {playerState.isLoading && (
           <ActivityIndicator size="small" color="#22C55E" style={styles.loader} />
         )}
-      </ThemedView>
+      </View>
 
       {/* Control Buttons */}
-      <ThemedView style={styles.controlsContainer}>
+      <View style={styles.controlsContainer}>
         <TouchableOpacity
-          style={[styles.controlButton, styles.secondaryButton]}
-          onPress={handlePrevious}>
+          style={styles.controlButton}
+          onPress={handlePrevious}
+          disabled={playerState.isLoading}
+          activeOpacity={0.7}>
           <MaterialIcons
             name="skip-previous"
-            size={32}
-            color="#FFFFFF"
+            size={24}
+            color={playerState.isLoading ? '#666' : '#FFFFFF'}
           />
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.controlButton, styles.playPauseButton]}
+          style={styles.playPauseButton}
           onPress={handlePlayPause}
-          disabled={playerState.isLoading}>
+          disabled={playerState.isLoading}
+          activeOpacity={0.8}>
           {playerState.isLoading ? (
             <ActivityIndicator size="large" color="#FFFFFF" />
           ) : (
             <MaterialIcons
               name={playerState.isPlaying ? 'pause' : 'play-arrow'}
-              size={48}
+              size={36}
               color="#FFFFFF"
             />
           )}
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.controlButton, styles.secondaryButton]}
-          onPress={handleNext}>
+          style={styles.controlButton}
+          onPress={handleNext}
+          disabled={playerState.isLoading}
+          activeOpacity={0.7}>
           <MaterialIcons
             name="skip-next"
-            size={32}
-            color="#FFFFFF"
+            size={24}
+            color={playerState.isLoading ? '#666' : '#FFFFFF'}
           />
         </TouchableOpacity>
-      </ThemedView>
+      </View>
+
+      {/* Song List */}
+      <View style={styles.songListContainer}>
+        <ThemedText style={styles.songListTitle}>Select Song</ThemedText>
+        <ScrollView style={styles.songList} showsVerticalScrollIndicator={false}>
+          {Array.from({ length: TOTAL_TRACKS }, (_, i) => i + 1).map((trackNum) => (
+            <TouchableOpacity
+              key={trackNum}
+              style={[
+                styles.songItem,
+                playerState.currentTrack === trackNum && styles.songItemActive,
+                trackNum === TOTAL_TRACKS && styles.songItemLast,
+              ]}
+              onPress={() => playTrack(trackNum)}
+              disabled={playerState.isLoading}>
+              <View style={styles.songItemContent}>
+                <MaterialIcons
+                  name={playerState.currentTrack === trackNum ? 'music-note' : 'queue-music'}
+                  size={20}
+                  color={playerState.currentTrack === trackNum ? '#22C55E' : '#9CA3AF'}
+                />
+                <ThemedText
+                  style={[
+                    styles.songItemText,
+                    playerState.currentTrack === trackNum && styles.songItemTextActive,
+                  ]}
+                  numberOfLines={1}>
+                  {getSongName(trackNum)}
+                </ThemedText>
+              </View>
+              {playerState.currentTrack === trackNum && (
+                <MaterialIcons name="play-arrow" size={18} color="#22C55E" />
+              )}
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
 
       {/* Volume Control */}
-      <ThemedView style={styles.volumeContainer}>
+      <View style={styles.volumeContainer}>
         <View style={styles.volumeHeader}>
-          <MaterialIcons name="volume-up" size={24} color="#22C55E" />
+          <MaterialIcons name="volume-up" size={18} color="#9CA3AF" />
           <ThemedText style={styles.volumeLabel}>Volume</ThemedText>
           <ThemedText style={styles.volumeValue}>{Math.round(playerState.volume)}</ThemedText>
         </View>
@@ -233,15 +348,7 @@ const MP3Player: React.FC = () => {
             step={1}
           />
         </View>
-      </ThemedView>
-
-      {/* Status Indicator */}
-      <ThemedView style={styles.statusContainer}>
-        <View style={[styles.statusDot, playerState.isPlaying && styles.statusDotActive]} />
-        <ThemedText style={styles.statusText}>
-          {playerState.isPlaying ? 'Playing' : 'Paused'}
-        </ThemedText>
-      </ThemedView>
+      </View>
     </View>
   );
 };
@@ -251,105 +358,114 @@ export default MP3Player;
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 48,
+    paddingHorizontal: 20,
+    paddingTop: 50,
+    paddingBottom: 30,
     backgroundColor: '#020617',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 32,
+    paddingHorizontal: 4,
   },
   title: {
     fontSize: 28,
     fontWeight: '700',
-    marginBottom: 8,
     color: '#FFFFFF',
-    textAlign: 'center',
+    letterSpacing: -0.3,
   },
-  connectionStatus: {
-    fontSize: 12,
-    marginBottom: 32,
-    textAlign: 'center',
-    color: '#9CA3AF',
-  },
-  trackInfoContainer: {
-    padding: 24,
-    borderRadius: 18,
-    backgroundColor: '#0F172A',
-    marginBottom: 32,
-    alignItems: 'center',
-    minHeight: 180,
-    justifyContent: 'center',
-  },
-  trackLabel: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-  },
-  trackTitle: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  trackSubtitle: {
-    fontSize: 16,
-    color: '#9CA3AF',
-    marginBottom: 12,
-  },
-  loader: {
-    marginTop: 8,
-  },
-  controlsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 24,
-    marginBottom: 32,
-  },
-  controlButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#1E293B',
-  },
-  playPauseButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#22C55E',
-  },
-  secondaryButton: {
-    backgroundColor: '#1E293B',
-  },
-  statusContainer: {
+  statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    padding: 16,
-    borderRadius: 12,
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
     backgroundColor: '#0F172A',
   },
   statusDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#666',
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#6B7280',
   },
   statusDotActive: {
     backgroundColor: '#22C55E',
   },
   statusText: {
-    fontSize: 16,
-    color: '#E5E7EB',
+    fontSize: 11,
+    color: '#9CA3AF',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  trackInfoContainer: {
+    padding: 24,
+    borderRadius: 20,
+    backgroundColor: '#0F172A',
+    marginBottom: 32,
+    alignItems: 'center',
+    minHeight: 160,
+    justifyContent: 'center',
+  },
+  trackLabel: {
+    fontSize: 11,
+    color: '#6B7280',
+    marginBottom: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '600',
+  },
+  trackTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    marginBottom: 6,
+    textAlign: 'center',
+    paddingHorizontal: 8,
+  },
+  trackSubtitle: {
+    fontSize: 13,
+    color: '#9CA3AF',
     fontWeight: '500',
+  },
+  loader: {
+    marginTop: 12,
+  },
+  controlsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 28,
+    marginBottom: 32,
+  },
+  controlButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+  },
+  playPauseButton: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#22C55E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#22C55E',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 6,
   },
   volumeContainer: {
     padding: 20,
-    borderRadius: 18,
+    borderRadius: 16,
     backgroundColor: '#0F172A',
-    marginBottom: 24,
   },
   volumeHeader: {
     flexDirection: 'row',
@@ -358,25 +474,76 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   volumeLabel: {
-    fontSize: 16,
-    color: '#E5E7EB',
+    fontSize: 12,
+    color: '#9CA3AF',
     fontWeight: '600',
     flex: 1,
     marginLeft: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   volumeValue: {
-    fontSize: 18,
+    fontSize: 14,
     color: '#22C55E',
     fontWeight: '700',
-    minWidth: 35,
+    minWidth: 28,
     textAlign: 'right',
   },
   sliderWrapper: {
     width: '100%',
-    paddingVertical: 8,
+    paddingVertical: 2,
   },
   volumeSlider: {
     width: '100%',
-    height: 40,
+    height: 36,
+  },
+  songListContainer: {
+    marginBottom: 24,
+    maxHeight: 200,
+  },
+  songListTitle: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    fontWeight: '600',
+    paddingHorizontal: 4,
+  },
+  songList: {
+    borderRadius: 16,
+    backgroundColor: '#0F172A',
+    maxHeight: 180,
+  },
+  songItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E293B',
+  },
+  songItemLast: {
+    borderBottomWidth: 0,
+  },
+  songItemActive: {
+    backgroundColor: '#1E293B',
+  },
+  songItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 12,
+  },
+  songItemText: {
+    fontSize: 14,
+    color: '#9CA3AF',
+    fontWeight: '500',
+    flex: 1,
+  },
+  songItemTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
   },
 });
