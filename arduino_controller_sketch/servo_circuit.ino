@@ -58,7 +58,7 @@ int clamp(int val, int minVal, int maxVal) {
 void setThrottle(int ud) {
   // ud in [-255, 255]. >0 = forward, <0 = backward
   ud = clamp(ud, -255, 255);
-  int speed = map(abs(ud), 0, 255, 255, 0);
+  int speed = abs(ud);
 
   analogWrite(SPEED_PIN, speed);
   if (ud > 0) {
@@ -80,7 +80,7 @@ void setSteeringFromLR(int lr) {
   lr = clamp(lr, -255, 255);
 
   // Map [-255, 255] → [-90, 90]
-  int angleOffset = map(lr, -255, 255, -45, 45);
+  int angleOffset = map(lr, -255, 255, 45, -45);
 
   // Servo.write expects 0..180; +90 recenters
   int servoAngle = angleOffset + 90;
