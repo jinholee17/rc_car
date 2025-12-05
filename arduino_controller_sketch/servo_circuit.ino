@@ -1,17 +1,18 @@
+#include "rc_car.h"
+#include "fsm.h"
 #include <WiFiS3.h>
 #include <Servo.h>
-#include "rc_car.h"
 
-const char* ssid     = "blasia";
-const char* password = "Welcometoblasia25";
+bool testAllCarFSM();
 
-// Ultrasonic (moved off 9 so servo can use 9)
+const char* ssid     = "matchaland";
+const char* password = "matcha123";
+
+// Ultrasonic
 const int trigPin = 7;
 const int echoPin = 8;
 
-float duration, distance;
-
-// Drive motor pins (you can leave these for later)
+// Drive motor pins (throttle)
 const int PIN_UD_FORWARD = 3;  // PWM_UD 3
 const int PIN_UD_BACK    = 6;  // PWM_UD 6
 
@@ -19,7 +20,15 @@ const int PIN_UD_BACK    = 6;  // PWM_UD 6
 const int SERVO_PIN = 9;
 Servo steeringServo;
 
+// Networking
 WiFiServer server(8080);
+
+// Command inputs from app (latest requested values)
+int latestThrottleCmd = 0;  // -255..255
+int latestTurnCmd     = 0;  // -255..255
+
+// FSM state
+full_state carState;
 
 // --- Helpers to parse query params from "GET /drive?ud=...&lr=... HTTP/1.1" ---
 
@@ -43,17 +52,40 @@ int getParamValue(const String &query, const String &name, bool &found) {
 }
 
 // Clamp helper
-int clamp(int val, int minVal, int maxVal) {
+int clampInt(int val, int minVal, int maxVal) {
   if (val < minVal) return minVal;
   if (val > maxVal) return maxVal;
   return val;
 }
 
-// --- Optional: throttle helper (not used yet, just here for later) ---
+float clampFloat(float val, float minVal, float maxVal) {
+  if (val < minVal) return minVal;
+  if (val > maxVal) return maxVal;
+  return val;
+}
 
-void setThrottle(int ud) {
-  // ud in [-255, 255]. >0 = forward, <0 = backward
-  ud = clamp(ud, -255, 255);
+// --- Ultrasonic distance (cm) ---
+
+float measureDistanceCm() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH, 25000); // timeout ~25ms
+  if (duration == 0) {
+    return 1000.0; // no echo → treat as "far away"
+  }
+
+  float distance = duration * 0.0343f / 2.0f; // speed of sound
+  return distance;
+}
+
+// --- Hardware output helpers ---
+
+void setThrottleOutput(int ud) {
+  ud = clampInt(ud, -255, 255);
 
   if (ud > 0) {
     analogWrite(PIN_UD_FORWARD, ud);
@@ -67,65 +99,28 @@ void setThrottle(int ud) {
   }
 }
 
-// --- Servo steering: map lr to -90..+90 degrees ---
+// Servo steering: map turn (-255..255) → angle (0..180)
+void setSteeringOutput(int turn) {
+  turn = clampInt(turn, -255, 255);
 
-void setSteeringFromLR(int lr) {
-  // lr is coming from app, probably in [-255, 255]
-  lr = clamp(lr, -255, 255);
-
-  // Map [-255, 255] → [-90, 90]
-  int angleOffset = map(lr, -255, 255, -90, 90);
-
-  // Servo.write expects 0..180; +90 recenters
+  int angleOffset = map(turn, -255, 255, -90, 90);
   int servoAngle = angleOffset + 90;
-  servoAngle = clamp(servoAngle, 0, 180);
+  servoAngle = clampInt(servoAngle, 0, 180);
 
-  Serial.print("Steering lr=");
-  Serial.print(lr);
-  Serial.print(" -> angleOffset=");
-  Serial.print(angleOffset);
+  Serial.print("Steering turn=");
+  Serial.print(turn);
   Serial.print(" -> servoAngle=");
   Serial.println(servoAngle);
 
   steeringServo.write(servoAngle);
 }
 
-// --- Setup & loop ---
+// --- FSM: updateFSM ---
 
-void setup() {
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
 
-  pinMode(PIN_UD_FORWARD, OUTPUT);
-  pinMode(PIN_UD_BACK, OUTPUT);
+// --- Networking: handle one client request non-blockingly ---
 
-  // Servo on pin 9
-  steeringServo.attach(SERVO_PIN);
-  steeringServo.write(90); // center position
-
-  // Ensure drive motors are off at start
-  setThrottle(0);
-
-  Serial.begin(9600);
-  Serial.print("Connecting to WiFi…");
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  delay(5000); // original delay
-
-  Serial.println("\nConnected!");
-  Serial.print("Arduino IP Address: ");
-  Serial.println(WiFi.localIP());
-
-  server.begin();
-  Serial.println("HTTP server listening on port 8080");
-}
-
-void loop() {
+void handleClientOnce() {
   WiFiClient client = server.available();
   if (!client) {
     return;
@@ -146,8 +141,7 @@ void loop() {
     }
   }
 
-  // Parse path and query
-  int getIndex = requestLine.indexOf("GET ");
+  int getIndex  = requestLine.indexOf("GET ");
   int httpIndex = requestLine.indexOf(" HTTP/");
   if (getIndex == -1 || httpIndex == -1) {
     client.println("HTTP/1.1 400 Bad Request");
@@ -158,7 +152,6 @@ void loop() {
   }
 
   String pathAndQuery = requestLine.substring(getIndex + 4, httpIndex); // skip "GET "
-
   Serial.print("Path+Query: ");
   Serial.println(pathAndQuery);
 
@@ -193,17 +186,12 @@ void loop() {
   Serial.print(hasLR);
   Serial.println(")");
 
-  // For now: throttle just prints out
+  // Update *command* inputs; FSM will use them next loop iteration
   if (hasUD) {
-    Serial.print("Throttle command (ud): ");
-    Serial.println(ud);
-    // If you want to enable later:
-    // setThrottle(ud);
+    latestThrottleCmd = clampInt(ud, -255, 255);
   }
-
-  // Steering: use lr to move servo
   if (hasLR) {
-    setSteeringFromLR(lr);
+    latestTurnCmd = clampInt(lr, -255, 255);
   }
 
   // Simple HTTP response
@@ -216,4 +204,87 @@ void loop() {
   delay(1);
   client.stop();
   Serial.println("Client disconnected");
+}
+
+// --- Setup & loop ---
+
+void setup() {
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  pinMode(PIN_UD_FORWARD, OUTPUT);
+  pinMode(PIN_UD_BACK, OUTPUT);
+
+  // Servo on pin 9
+  steeringServo.attach(SERVO_PIN);
+  steeringServo.write(90); // center position
+
+  // Initial FSM state
+  carState.distance_from_obstacle = 1000.0;
+  carState.throttle               = 0;
+  carState.turn                   = 0;
+  carState.state                  = s_IDLE;
+
+  // Ensure drive motors are off at start
+  setThrottleOutput(0);
+
+  Serial.begin(9600);
+
+  // COMMENT OUT LINES 236-249 TO SKIP TESTING, UNCOMMENT FOR TESTING
+  
+  // ---------- Testing code start ----------
+  delay(2000);
+  // Run FSM tests
+  bool ok = testAllCarFSM();
+
+  if (ok) {
+    Serial.println("testAllCarFSM() reported: ALL PASSED");
+  } else {
+    Serial.println("testAllCarFSM() reported: SOME FAILED");
+  }
+
+  // Stop here so loop() doesn't run the car logic
+  while (true) {
+    // do nothing
+  }
+  // ---------- Testing code end ----------
+
+
+  Serial.print("Connecting to WiFi…");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  delay(5000); // original delay
+
+  Serial.println("\nConnected!");
+  Serial.print("Arduino IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin();
+  Serial.println("HTTP server listening on port 8080");
+}
+
+void loop() {
+  // 1. Handle at most one incoming HTTP request (non-blocking pattern)
+  handleClientOnce();
+
+  // 2. Read sensors (ultrasonic)
+  float distanceCm = measureDistanceCm();
+
+  // 3. FSM update: compute next state from current + inputs
+  carState = updateFSM(carState,
+                       latestThrottleCmd,
+                       latestTurnCmd,
+                       distanceCm);
+
+  // 4. Apply outputs to hardware
+  setThrottleOutput(carState.throttle);
+  setSteeringOutput(carState.turn);
+
+  // 5. Small delay to keep loop from spinning too hard
+  delay(10);
 }
