@@ -17,19 +17,19 @@ export default function TabLayout() {
         tabBarButton: HapticTab,
       }}>
       <Tabs.Screen
-      name="controller"
-      options={{
-        title: 'Control',
-        tabBarIcon: ({ color }) => (
-          <IconSymbol size={28} name="gamecontroller.fill" color={color} />
-        ),
-      }}
+        name="CarController"
+        options={{
+          title: 'Control',
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={28} name="gamecontroller.fill" color={color} />
+          ),
+        }}
       />
       <Tabs.Screen
         name="index"
         options={{
           title: 'Aux',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="music.note" color={color} />,
         }}
       />
       <Tabs.Screen

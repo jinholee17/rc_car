@@ -1,11 +1,12 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import Slider from '@react-native-community/slider';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 
 // Your Arduino HTTP server (same as CarController)
-const ARDUINO_IP = '172.20.10.4'; // Update this to match your Arduino IP
+const ARDUINO_IP = '172.20.10.6'; // Update this to match your Arduino IP
 const PORT = 8080;
 
 interface MP3PlayerState {
@@ -13,6 +14,7 @@ interface MP3PlayerState {
   currentTrack: number;
   totalTracks: number;
   isLoading: boolean;
+  volume: number;
 }
 
 const MP3Player: React.FC = () => {
@@ -21,6 +23,7 @@ const MP3Player: React.FC = () => {
     currentTrack: 1,
     totalTracks: 10, // You can update this based on actual number of tracks
     isLoading: false,
+    volume: 30, // DFPlayer Mini volume range: 0-30
   });
 
   // Send HTTP request to Arduino for MP3 control
@@ -31,26 +34,11 @@ const MP3Player: React.FC = () => {
     try {
       const response = await fetch(url);
       if (response.ok) {
-        // Update state based on command
-        if (command === 'play') {
-          setPlayerState((prev) => ({ ...prev, isPlaying: true, isLoading: false }));
-        } else if (command === 'pause') {
-          setPlayerState((prev) => ({ ...prev, isPlaying: false, isLoading: false }));
-        } else if (command === 'next') {
-          setPlayerState((prev) => ({
-            ...prev,
-            currentTrack: Math.min(prev.currentTrack + 1, prev.totalTracks),
-            isPlaying: true,
-            isLoading: false,
-          }));
-        } else if (command === 'previous') {
-          setPlayerState((prev) => ({
-            ...prev,
-            currentTrack: Math.max(prev.currentTrack - 1, 1),
-            isPlaying: true,
-            isLoading: false,
-          }));
-        }
+        setPlayerState((prev) => ({ ...prev, isLoading: false }));
+        // Fetch actual state from Arduino after command completes
+        setTimeout(() => {
+          fetchPlayerStatus();
+        }, 300);
       } else {
         setPlayerState((prev) => ({ ...prev, isLoading: false }));
         console.log('Error: MP3 command failed');
@@ -59,26 +47,71 @@ const MP3Player: React.FC = () => {
       console.log('Error sending MP3 command:', error);
       setPlayerState((prev) => ({ ...prev, isLoading: false }));
     }
+  }, [fetchPlayerStatus]);
+
+  // Fetch current state from Arduino
+  const fetchPlayerStatus = useCallback(async () => {
+    try {
+      const url = `http://${ARDUINO_IP}:${PORT}/mp3/status`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
+      
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (response.ok) {
+        const data = await response.json();
+        setPlayerState((prev) => {
+          // Only update if values actually changed (prevents unnecessary re-renders)
+          const newIsPlaying = data.isPlaying === true;
+          const newVolume = data.volume !== undefined ? data.volume : prev.volume;
+          
+          if (prev.isPlaying === newIsPlaying && prev.volume === newVolume) {
+            return prev; // No change, return same state
+          }
+          
+          return {
+            ...prev,
+            isPlaying: newIsPlaying,
+            volume: newVolume,
+          };
+        });
+      }
+    } catch (error) {
+      // Silently fail - don't spam console with errors
+      // If we can't connect, keep current state (don't reset)
+    }
   }, []);
 
-  // Poll for current track info (optional - if Arduino sends track info)
+  // Sync state when app loads
   useEffect(() => {
-    const interval = setInterval(async () => {
-      if (playerState.isPlaying) {
-        // You can add a GET endpoint to fetch current track info
-        // For now, we'll just keep the UI in sync
-      }
-    }, 2000);
+    fetchPlayerStatus();
+  }, [fetchPlayerStatus]);
 
-    return () => clearInterval(interval);
-  }, [playerState.isPlaying]);
+  // Poll Arduino state periodically to detect physical button presses
+  // Use longer interval and prevent overlapping requests to reduce lag
+  const isPollingRef = useRef(false);
+  
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      // Only poll if not already fetching (prevents request queue)
+      if (!isPollingRef.current && !playerState.isLoading) {
+        isPollingRef.current = true;
+        fetchPlayerStatus().finally(() => {
+          isPollingRef.current = false;
+        });
+      }
+    }, 2500); // Check every 2.5 seconds (less frequent = less lag)
+
+    return () => clearInterval(pollInterval);
+  }, [fetchPlayerStatus, playerState.isLoading]);
 
   const handlePlayPause = () => {
-    if (playerState.isPlaying) {
-      sendMP3Command('pause');
-    } else {
-      sendMP3Command('play');
-    }
+    // Send play command (Arduino toggles play/pause)
+    sendMP3Command('play');
   };
 
   const handleNext = () => {
@@ -87,6 +120,28 @@ const MP3Player: React.FC = () => {
 
   const handlePrevious = () => {
     sendMP3Command('previous');
+  };
+
+  // Send volume command to Arduino
+  const sendVolumeCommand = useCallback(async (volume: number) => {
+    const url = `http://${ARDUINO_IP}:${PORT}/mp3?volume=${Math.round(volume)}`;
+    try {
+      await fetch(url);
+    } catch (error) {
+      console.log('Error sending volume command:', error);
+    }
+  }, []);
+
+  // Update UI immediately for smooth visual feedback (no HTTP request)
+  const handleVolumeChange = (value: number) => {
+    const roundedValue = Math.round(value);
+    setPlayerState((prev) => ({ ...prev, volume: roundedValue }));
+  };
+
+  // Send HTTP request only when user finishes sliding (lifts finger)
+  const handleVolumeSlidingComplete = (value: number) => {
+    const roundedValue = Math.round(value);
+    sendVolumeCommand(roundedValue);
   };
 
   return (
@@ -149,6 +204,29 @@ const MP3Player: React.FC = () => {
             color={playerState.currentTrack === playerState.totalTracks ? '#666' : '#FFFFFF'}
           />
         </TouchableOpacity>
+      </ThemedView>
+
+      {/* Volume Control */}
+      <ThemedView style={styles.volumeContainer}>
+        <View style={styles.volumeHeader}>
+          <MaterialIcons name="volume-up" size={24} color="#22C55E" />
+          <ThemedText style={styles.volumeLabel}>Volume</ThemedText>
+          <ThemedText style={styles.volumeValue}>{Math.round(playerState.volume)}</ThemedText>
+        </View>
+        <View style={styles.sliderWrapper}>
+          <Slider
+            style={styles.volumeSlider}
+            minimumValue={0}
+            maximumValue={30}
+            value={playerState.volume}
+            onValueChange={handleVolumeChange}
+            onSlidingComplete={handleVolumeSlidingComplete}
+            minimumTrackTintColor="#22C55E"
+            maximumTrackTintColor="#1E293B"
+            thumbTintColor="#22C55E"
+            step={1}
+          />
+        </View>
       </ThemedView>
 
       {/* Status Indicator */}
@@ -260,5 +338,39 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#E5E7EB',
     fontWeight: '500',
+  },
+  volumeContainer: {
+    padding: 20,
+    borderRadius: 18,
+    backgroundColor: '#0F172A',
+    marginBottom: 24,
+  },
+  volumeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  volumeLabel: {
+    fontSize: 16,
+    color: '#E5E7EB',
+    fontWeight: '600',
+    flex: 1,
+    marginLeft: 8,
+  },
+  volumeValue: {
+    fontSize: 18,
+    color: '#22C55E',
+    fontWeight: '700',
+    minWidth: 35,
+    textAlign: 'right',
+  },
+  sliderWrapper: {
+    width: '100%',
+    paddingVertical: 8,
+  },
+  volumeSlider: {
+    width: '100%',
+    height: 40,
   },
 });
