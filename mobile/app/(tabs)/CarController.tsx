@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   View,
   Text,
@@ -6,11 +12,12 @@ import {
   PanResponder,
   GestureResponderEvent,
   PanResponderGestureState,
+  TouchableOpacity,
 } from 'react-native';
 import Slider from '@react-native-community/slider';
 
 // Your Arduino HTTP server
-const ARDUINO_IP = '192.168.1.18';// '172.20.10.4'; // from Serial
+const ARDUINO_IP = '192.168.1.18';
 const PORT = 8080;
 
 // Helper: clamp a value to [-max, max]
@@ -22,7 +29,8 @@ function clamp(val: number, max: number): number {
 
 // ---------------- Joystick-based UI ----------------
 
-const JOYSTICK_RADIUS = 80;
+// We'll now treat this as HALF the width/height of the square
+const JOYSTICK_HALF_SIZE = 80;
 const KNOB_RADIUS = 28;
 const MAX_PWM = 255;
 
@@ -49,7 +57,7 @@ const CarController: React.FC = () => {
       const udClamped = clamp(ud, MAX_PWM);
       const lrClamped = clamp(lr, MAX_PWM);
 
-      // optional: don't spam identical values
+      // optional: don't spam very small changes
       if (
         Math.abs(udClamped - lastSentUD.current) < 3 &&
         Math.abs(lrClamped - lastSentLR.current) < 3
@@ -71,76 +79,75 @@ const CarController: React.FC = () => {
   );
 
   // Map joystick position → PWM values
-  const updateFromStick = useCallback(
-    (x: number, y: number) => {
-      // x,y in [-JOYSTICK_RADIUS, JOYSTICK_RADIUS]
-      // Normalize to [-1,1]
-      const normX = x / JOYSTICK_RADIUS;
-      const normY = y / JOYSTICK_RADIUS;
+  const updateFromStick = useCallback((x: number, y: number) => {
+    // x,y in [-JOYSTICK_HALF_SIZE, JOYSTICK_HALF_SIZE]
+    // Normalize to [-1,1]
+    const normX = x / JOYSTICK_HALF_SIZE;
+    const normY = y / JOYSTICK_HALF_SIZE;
 
-      // Invert Y so up is positive throttle (like a real joystick)
-      const throttle = -normY; // up = 1, down = -1
-      const steering = normX;  // right = 1, left = -1
+    // Invert Y so up is positive throttle (like a real joystick)
+    const throttle = -normY; // up = 1, down = -1
+    const steering = normX;  // right = 1, left = -1
 
-      const newUD = Math.round(throttle * MAX_PWM);
-      const newLR = Math.round(steering * MAX_PWM);
+    const newUD = Math.round(throttle * MAX_PWM);
+    const newLR = Math.round(steering * MAX_PWM);
 
-      setPwmUD(newUD);
-      setPwmLR(newLR);
-      // sendControlCommands(newUD, newLR);
-    },
-    // [sendControlCommands],
-  );
+    setPwmUD(newUD);
+    setPwmLR(newLR);
+  }, []);
 
   const panResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: () => true,
-        onPanResponderMove: (_evt: GestureResponderEvent, gestureState: PanResponderGestureState) => {
-          // gestureState.dx/dy: displacement from gesture start
+        onPanResponderMove: (
+          _evt: GestureResponderEvent,
+          gestureState: PanResponderGestureState,
+        ) => {
           let { dx, dy } = gestureState;
 
-          // Clamp to circle radius (so knob stays inside)
-          const distance = Math.sqrt(dx * dx + dy * dy);
-          if (distance > JOYSTICK_RADIUS) {
-            const scale = JOYSTICK_RADIUS / distance;
-            dx *= scale;
-            dy *= scale;
-          }
+          // ❗ Square clamp instead of circular:
+          // Keep dx, dy within [-JOYSTICK_HALF_SIZE, JOYSTICK_HALF_SIZE]
+          dx = Math.max(-JOYSTICK_HALF_SIZE, Math.min(JOYSTICK_HALF_SIZE, dx));
+          dy = Math.max(-JOYSTICK_HALF_SIZE, Math.min(JOYSTICK_HALF_SIZE, dy));
 
           setStickX(dx);
           setStickY(dy);
           updateFromStick(dx, dy);
         },
         onPanResponderRelease: () => {
-          // Snap back to center and send neutral
-          // setStickX(0);
-          // setStickY(0);
-          // setPwmUD(0);
-          // setPwmLR(0);
-          // sendControlCommands(0, 0);
+          // don't auto-reset; user can hit STOP
         },
         onPanResponderTerminate: () => {
-          // Also reset if gesture is interrupted
+          // if gesture is interrupted, snap to center but don't send yet
           setStickX(0);
           setStickY(0);
           setPwmUD(0);
           setPwmLR(0);
-          // sendControlCommands(0, 0);
         },
       }),
     [updateFromStick],
   );
+
+  // Periodically send the current joystick state
   useEffect(() => {
     const interval = setInterval(() => {
-      // send whatever the current joystick state is
       sendControlCommands(pwmUD, pwmLR);
-  }, 100); // 100 ms → 10 times per second
+    }, 100); // 100 ms → 10 times per second
 
-  return () => clearInterval(interval);
-}, [pwmUD, pwmLR, sendControlCommands]);
+    return () => clearInterval(interval);
+  }, [pwmUD, pwmLR, sendControlCommands]);
 
+  // --- STOP button handler: reset to neutral and send 0,0 immediately ---
+  const handleStop = useCallback(() => {
+    setStickX(0);
+    setStickY(0);
+    setPwmUD(0);
+    setPwmLR(0);
+    // send immediate stop command
+    sendControlCommands(0, 0);
+  }, [sendControlCommands]);
 
   return (
     <View style={styles.container}>
@@ -157,6 +164,7 @@ const CarController: React.FC = () => {
           Up/Down = Throttle • Left/Right = Steering
         </Text>
 
+        {/* Square joystick area */}
         <View style={styles.joystickOuter} {...panResponder.panHandlers}>
           {/* Crosshair lines */}
           <View style={styles.joystickVerticalLine} />
@@ -186,13 +194,19 @@ const CarController: React.FC = () => {
             <Text style={styles.valueText}>{pwmLR}</Text>
           </View>
         </View>
+
+        {/* STOP button */}
+        <TouchableOpacity style={styles.stopButton} onPress={handleStop}>
+          <Text style={styles.stopButtonText}>STOP</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Optional: max speed limit slider */}
       <View style={styles.extraSection}>
         <Text style={styles.sectionLabel}>Max Power (future tweak?)</Text>
         <Text style={styles.sectionSubLabel}>
-          Currently mapped to ±{MAX_PWM}. You can later add a slider to cap this.
+          Currently mapped to ±{MAX_PWM}. You can later add a slider to cap
+          this.
         </Text>
         <Slider
           style={styles.slider}
@@ -250,9 +264,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   joystickOuter: {
-    width: JOYSTICK_RADIUS * 2,
-    height: JOYSTICK_RADIUS * 2,
-    borderRadius: JOYSTICK_RADIUS,
+    width: JOYSTICK_HALF_SIZE * 2,
+    height: JOYSTICK_HALF_SIZE * 2,
+    borderRadius: 12, // small rounding, still visually square-ish
     borderWidth: 2,
     borderColor: '#1E293B',
     alignSelf: 'center',
@@ -312,5 +326,18 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 36,
     marginTop: 8,
+  },
+  stopButton: {
+    marginTop: 16,
+    alignSelf: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+    borderRadius: 999,
+    backgroundColor: '#DC2626',
+  },
+  stopButtonText: {
+    color: '#F9FAFB',
+    fontWeight: '700',
+    fontSize: 16,
   },
 });
