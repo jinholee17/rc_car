@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Animated } from 'react-native';
 import Slider from '@react-native-community/slider';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { ThemedText } from '@/components/themed-text';
@@ -14,14 +14,13 @@ const TRACK_NAMES: { [key: number]: string } = {
   1: 'deep in it by berlioz',
   2: 'I Am in Love by Jennifer Lara',
   3: 'Broccoli by Lil Yachty',
-  4: 'We Found Love by Rihanna',
-  5: 'Jukebox Joints by ASAP ROCKY',
-  6: 'Fashion Killa',
-  7: 'Pyramids by Frank Ocean',
-  8: 'Where Are You 54 Ultra',
+  4: 'Fashion Killa by A$AP Rocky',
+  5: 'Jukebox Joints by A$AP ROCKY',
+  6: 'Pyramids by Frank Ocean',
+  7: 'Where Are You 54 Ultra',
 };
 
-const TOTAL_TRACKS = 8;
+const TOTAL_TRACKS = 7;
 
 // Helper to get song name from track number
 const getSongName = (trackNumber: number): string => {
@@ -45,6 +44,12 @@ const MP3Player: React.FC = () => {
     isLoading: false,
     volume: 30, // DFPlayer Mini volume range: 0-30
   });
+
+  // Animation values for smooth button interactions
+  const playPauseScale = useRef(new Animated.Value(1)).current;
+  const nextScale = useRef(new Animated.Value(1)).current;
+  const prevScale = useRef(new Animated.Value(1)).current;
+  const trackNameOpacity = useRef(new Animated.Value(1)).current;
 
   // Fetch current state from Arduino
   const fetchPlayerStatus = useCallback(async () => {
@@ -98,18 +103,17 @@ const MP3Player: React.FC = () => {
 
   // Send HTTP request to Arduino for MP3 control
   const sendMP3Command = useCallback(async (command: 'play' | 'pause' | 'next' | 'previous') => {
-    setPlayerState((prev) => ({ ...prev, isLoading: true }));
-    
     const url = `http://${ARDUINO_IP}:${PORT}/mp3?cmd=${command}`;
     try {
       const response = await fetch(url);
       if (response.ok) {
-        setPlayerState((prev) => ({ ...prev, isLoading: false }));
         // Fetch actual state from Arduino after command completes
-        // Give DFPlayer time to update track number
+        // Reduced delay for faster updates
         setTimeout(() => {
-          fetchPlayerStatus();
-        }, 400);
+          fetchPlayerStatus().then(() => {
+            setPlayerState((prev) => ({ ...prev, isLoading: false }));
+          });
+        }, 250);
       } else {
         setPlayerState((prev) => ({ ...prev, isLoading: false }));
         console.log('Error: MP3 command failed');
@@ -143,6 +147,38 @@ const MP3Player: React.FC = () => {
     return () => clearInterval(pollInterval);
   }, [fetchPlayerStatus, playerState.isLoading]);
 
+  // Animate button press
+  const animateButtonPress = (scale: Animated.Value) => {
+    Animated.sequence([
+      Animated.timing(scale, {
+        toValue: 0.85,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(scale, {
+        toValue: 1,
+        duration: 150,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  // Animate track name update
+  const animateTrackNameUpdate = () => {
+    Animated.sequence([
+      Animated.timing(trackNameOpacity, {
+        toValue: 0.3,
+        duration: 150,
+        useNativeDriver: true,
+      }),
+      Animated.timing(trackNameOpacity, {
+        toValue: 1,
+        duration: 150,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
   // Play a specific track
   const playTrack = useCallback(async (trackNumber: number) => {
     if (trackNumber < 1 || trackNumber > TOTAL_TRACKS) return;
@@ -156,21 +192,25 @@ const MP3Player: React.FC = () => {
       isLoading: true,
     }));
     
+    // Animate track name update
+    animateTrackNameUpdate();
+    
     const url = `http://${ARDUINO_IP}:${PORT}/mp3?track=${trackNumber}`;
     try {
       const response = await fetch(url);
       if (response.ok) {
-        setPlayerState((prev) => ({ ...prev, isLoading: false }));
-        // Sync state after playing track - give DFPlayer time to update
+        // Sync state after playing track - reduced delay for faster updates
         setTimeout(() => {
-          fetchPlayerStatus();
-        }, 500); // Increased delay to ensure DFPlayer has updated
+          fetchPlayerStatus().then(() => {
+            setPlayerState((prev) => ({ ...prev, isLoading: false }));
+          });
+        }, 300);
       } else {
         setPlayerState((prev) => ({ ...prev, isLoading: false }));
         // Re-fetch to get actual state
         setTimeout(() => {
           fetchPlayerStatus();
-        }, 300);
+        }, 250);
       }
     } catch (error) {
       console.log('Error playing track:', error);
@@ -178,25 +218,70 @@ const MP3Player: React.FC = () => {
       // Re-fetch to get actual state
       setTimeout(() => {
         fetchPlayerStatus();
-      }, 300);
+      }, 250);
     }
   }, [fetchPlayerStatus]);
 
   const handlePlayPause = () => {
     if (playerState.isLoading) return; // Prevent multiple clicks
+    
+    // Optimistically update UI immediately for smooth feedback
+    setPlayerState((prev) => ({
+      ...prev,
+      isPlaying: !prev.isPlaying,
+      isLoading: true,
+    }));
+    
+    // Animate button press
+    animateButtonPress(playPauseScale);
+    
     // Send play command (Arduino toggles play/pause)
     sendMP3Command('play');
   };
-
   const handleNext = () => {
-    if (playerState.isLoading) return; // Prevent multiple clicks
-    sendMP3Command('next');
-  };
+  if (playerState.isLoading) return;
+
+  animateButtonPress(nextScale);
+  animateTrackNameUpdate();
+
+  // Only show loading — DO NOT update track number yet
+  setPlayerState(prev => ({
+    ...prev,
+    isLoading: true
+  }));
+
+  sendMP3Command("next");
+
+  // After Arduino completes, fetch real track #
+  setTimeout(() => {
+    fetchPlayerStatus().then(() => {
+      setPlayerState(prev => ({ ...prev, isLoading: false }));
+    });
+  }, 350); // 300–400ms is correct for DFPlayer
+};
+
+
 
   const handlePrevious = () => {
-    if (playerState.isLoading) return; // Prevent multiple clicks
-    sendMP3Command('previous');
+    if (playerState.isLoading) return;
+
+    animateButtonPress(prevScale);
+    animateTrackNameUpdate();
+
+    setPlayerState(prev => ({
+      ...prev,
+      isLoading: true
+    }));
+
+    sendMP3Command("previous");
+
+    setTimeout(() => {
+      fetchPlayerStatus().then(() => {
+        setPlayerState(prev => ({ ...prev, isLoading: false }));
+      });
+    }, 350);
   };
+
 
   // Send volume command to Arduino
   const sendVolumeCommand = useCallback(async (volume: number) => {
@@ -236,9 +321,14 @@ const MP3Player: React.FC = () => {
       {/* Current Track Display */}
       <View style={styles.trackInfoContainer}>
         <ThemedText style={styles.trackLabel}>Now Playing</ThemedText>
-        <ThemedText style={styles.trackTitle} numberOfLines={2}>
+        <Animated.Text 
+          style={[
+            styles.trackTitle,
+            { opacity: trackNameOpacity }
+          ]} 
+          numberOfLines={2}>
           {playerState.trackName || getSongName(playerState.currentTrack)}
-        </ThemedText>
+        </Animated.Text>
         <ThemedText style={styles.trackSubtitle}>
           Track {playerState.currentTrack}
         </ThemedText>
@@ -250,43 +340,58 @@ const MP3Player: React.FC = () => {
       {/* Control Buttons */}
       <View style={styles.controlsContainer}>
         <TouchableOpacity
-          style={styles.controlButton}
           onPress={handlePrevious}
           disabled={playerState.isLoading}
           activeOpacity={0.7}>
-          <MaterialIcons
-            name="skip-previous"
-            size={24}
-            color={playerState.isLoading ? '#666' : '#FFFFFF'}
-          />
+          <Animated.View
+            style={[
+              styles.controlButton,
+              { transform: [{ scale: prevScale }] }
+            ]}>
+            <MaterialIcons
+              name="skip-previous"
+              size={24}
+              color={playerState.isLoading ? '#666' : '#FFFFFF'}
+            />
+          </Animated.View>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.playPauseButton}
           onPress={handlePlayPause}
           disabled={playerState.isLoading}
           activeOpacity={0.8}>
-          {playerState.isLoading ? (
-            <ActivityIndicator size="large" color="#FFFFFF" />
-          ) : (
-            <MaterialIcons
-              name={playerState.isPlaying ? 'pause' : 'play-arrow'}
-              size={36}
-              color="#FFFFFF"
-            />
-          )}
+          <Animated.View
+            style={[
+              styles.playPauseButton,
+              { transform: [{ scale: playPauseScale }] }
+            ]}>
+            {playerState.isLoading ? (
+              <ActivityIndicator size="large" color="#FFFFFF" />
+            ) : (
+              <MaterialIcons
+                name={playerState.isPlaying ? 'pause' : 'play-arrow'}
+                size={36}
+                color="#FFFFFF"
+              />
+            )}
+          </Animated.View>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.controlButton}
           onPress={handleNext}
           disabled={playerState.isLoading}
           activeOpacity={0.7}>
-          <MaterialIcons
-            name="skip-next"
-            size={24}
-            color={playerState.isLoading ? '#666' : '#FFFFFF'}
-          />
+          <Animated.View
+            style={[
+              styles.controlButton,
+              { transform: [{ scale: nextScale }] }
+            ]}>
+            <MaterialIcons
+              name="skip-next"
+              size={24}
+              color={playerState.isLoading ? '#666' : '#FFFFFF'}
+            />
+          </Animated.View>
         </TouchableOpacity>
       </View>
 
