@@ -2,6 +2,11 @@
 #include "rc_car.h"
 #include "fsm.h"
 
+// Forward declare helpers from servo_circuit.ino so the linker can find them
+int   clampInt(int val, int minVal, int maxVal);
+float clampFloat(float val, float minVal, float maxVal);
+int   getParamValue(const String &query, const String &name, bool &found);
+
 #define TESTING   // toggle this on/off as needed
 
 // --------- CAR FSM TESTING HELPERS ---------
@@ -19,6 +24,38 @@ const char* carStateToStr(fsm_state s) {
     case s_IDLE: return "IDLE";
     case s_MOVE: return "MOVE";
     default:     return "UNKNOWN";
+  }
+}
+
+bool assertEqualInt(const char* name, int expected, int actual) {
+  if (expected == actual) {
+    Serial.print("PASSED: ");
+    Serial.println(name);
+    return true;
+  } else {
+    Serial.print("FAILED: ");
+    Serial.println(name);
+    Serial.print("  expected=");
+    Serial.print(expected);
+    Serial.print(" actual=");
+    Serial.println(actual);
+    return false;
+  }
+}
+
+bool assertEqualFloat(const char* name, float expected, float actual, float eps = 1e-3f) {
+  if (fabs(expected - actual) <= eps) {
+    Serial.print("PASSED: ");
+    Serial.println(name);
+    return true;
+  } else {
+    Serial.print("FAILED: ");
+    Serial.println(name);
+    Serial.print("  expected=");
+    Serial.print(expected);
+    Serial.print(" actual=");
+    Serial.println(actual);
+    return false;
   }
 }
 
