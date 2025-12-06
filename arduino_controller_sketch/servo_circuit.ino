@@ -280,6 +280,7 @@ void loop() {
 
   // 2. Read sensors (ultrasonic)
   float distanceCm = measureDistanceCm();
+  Serial.println(distanceCm);
 
   // 3. FSM update: compute next state from current + inputs
   carState = updateFSM(carState,
