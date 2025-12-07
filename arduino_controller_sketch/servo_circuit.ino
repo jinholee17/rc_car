@@ -239,20 +239,20 @@ void setup() {
   // COMMENT OUT LINES 236-249 TO SKIP TESTING, UNCOMMENT FOR TESTING
   
   // ---------- Testing code start ----------
-  // delay(2000);
-  // // Run FSM tests
-  // bool ok = testAllCarFSM();
+  delay(2000);
+  // Run FSM tests
+  bool ok = testAllCarFSM();
 
-  // if (ok) {
-  //   Serial.println("testAllCarFSM() reported: ALL PASSED");
-  // } else {
-  //   Serial.println("testAllCarFSM() reported: SOME FAILED");
-  // }
+  if (ok) {
+    Serial.println("testAllCarFSM() reported: ALL PASSED");
+  } else {
+    Serial.println("testAllCarFSM() reported: SOME FAILED");
+  }
 
-  // // Stop here so loop() doesn't run the car logic
-  // while (true) {
-  //   // do nothing
-  // }
+  // Stop here so loop() doesn't run the car logic
+  while (true) {
+    // do nothing
+  }
   // ---------- Testing code end ----------
 
 
