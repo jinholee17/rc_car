@@ -165,7 +165,9 @@ const CarController: React.FC = () => {
         </Text>
 
         {/* Square joystick area */}
-        <View style={styles.joystickOuter} {...panResponder.panHandlers}>
+        <View style={styles.joystickOuter} 
+        testID="joystick-area"
+        {...panResponder.panHandlers}>
           {/* Crosshair lines */}
           <View style={styles.joystickVerticalLine} />
           <View style={styles.joystickHorizontalLine} />
