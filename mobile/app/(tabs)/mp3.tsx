@@ -6,7 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 
 // Your Arduino HTTP server (same as CarController)
-const ARDUINO_IP = '172.20.10.6'; // Update this to match your Arduino IP
+const ARDUINO_IP = '192.168.1.18';//'172.20.10.6'; // Update this to match your Arduino IP
 const PORT = 8080;
 
 // Track names - matches Arduino order
