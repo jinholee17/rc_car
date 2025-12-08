@@ -10,7 +10,14 @@ const char* password =  "mavis4-dun-fax"; //BbBbWDYS?3";
 
 // Ultrasonic
 const int trigPin = 7;
-const int echoPin = 6;
+const int echoPin = 2;
+
+// ---  Variables for ultrasonic ISR ---
+volatile unsigned long echoStart = 0;
+volatile unsigned long echoEnd = 0;
+volatile bool echoDone = false;
+unsigned long lastTrigger = 0; 
+float curDistanceCm = 1000.0f; // The current distance calculated by the ultrasensor.
 
 // Drive motor pins (throttle)
 const int PIN_UD_FORWARD = 8;  // PWM_UD 3
@@ -81,6 +88,58 @@ float measureDistanceCm() {
 
   float distance = duration * 0.0343f / 2.0f; // speed of sound
   return distance;
+}
+
+// The ISR that triggers when the ultrasensor's echo pin has a change in signal.
+void echoISR() {
+  if (digitalRead(echoPin) == HIGH) {
+    echoStart = micros();
+  } else {
+    echoEnd = micros();
+    echoDone = true;
+  }
+}
+
+// Triggers the ultrasonic sensor to fire.
+void triggerUltrasonic() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+}
+
+// Calculates the distance from the ultasonic sensor.
+void calculateDistance() {
+  // If the echo is not done yet, ignore.
+  if (!echoDone) {
+    return;
+  }
+
+  echoDone = false;
+
+  // Get the start and end for this echo.
+  unsigned long curStart;
+  unsigned long curEnd;
+  noInterrupts();
+  curStart = echoStart;
+  curEnd = echoEnd;
+  interrupts();
+
+  // Calculate the duration betwen the start and end,
+  unsigned long duration;
+  if (curEnd < curStart) { // If the end is less than the start time, we did not get a return ping. 
+    duration = 0;
+  }
+  else {
+    duration = curEnd - curStart;
+  }
+
+  if (duration == 0) {
+    curDistanceCm = 1000.0; // Treat it as any object being far away.
+  } else {
+    curDistanceCm = duration * 0.0343f / 2.0f; // speed of sound
+  }
 }
 
 // --- Hardware output helpers ---
@@ -218,6 +277,8 @@ void setup() {
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
 
+  attachInterrupt(digitalPinToInterrupt(echoPin), echoISR, CHANGE);
+
   pinMode(PIN_UD_FORWARD, OUTPUT);
   pinMode(PIN_UD_BACK, OUTPUT);
 
@@ -278,19 +339,29 @@ void loop() {
   // 1. Handle at most one incoming HTTP request (non-blocking pattern)
   handleClientOnce();
 
+  wdt_enable(WDTO_8S);
+
   // 2. Read sensors (ultrasonic)
-  float distanceCm = measureDistanceCm();
-  Serial.println(distanceCm);
+  //float distanceCm = measureDistanceCm();
+  unsigned long curTime = millis();
+  if (curTime - lastTrigger >= 0) {
+    triggerUltrasonic();
+    lastTrigger = curTime;
+  }
+
+  calculateDistance();
 
   // 3. FSM update: compute next state from current + inputs
   carState = updateFSM(carState,
                        latestThrottleCmd,
                        latestTurnCmd,
-                       distanceCm);
+                       curDistanceCm);
 
   // 4. Apply outputs to hardware
   setThrottleOutput(carState.throttle);
   setSteeringOutput(carState.turn);
+
+  wdt_reset();
 
   // 5. Small delay to keep loop from spinning too hard
   delay(10);
