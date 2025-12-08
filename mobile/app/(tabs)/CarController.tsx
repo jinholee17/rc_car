@@ -107,7 +107,7 @@ const CarController: React.FC = () => {
         ) => {
           let { dx, dy } = gestureState;
 
-          // ❗ Square clamp instead of circular:
+          // Square clamp instead of circular:
           // Keep dx, dy within [-JOYSTICK_HALF_SIZE, JOYSTICK_HALF_SIZE]
           dx = Math.max(-JOYSTICK_HALF_SIZE, Math.min(JOYSTICK_HALF_SIZE, dx));
           dy = Math.max(-JOYSTICK_HALF_SIZE, Math.min(JOYSTICK_HALF_SIZE, dy));
@@ -199,22 +199,6 @@ const CarController: React.FC = () => {
         <TouchableOpacity style={styles.stopButton} onPress={handleStop}>
           <Text style={styles.stopButtonText}>STOP</Text>
         </TouchableOpacity>
-      </View>
-
-      {/* Optional: max speed limit slider */}
-      <View style={styles.extraSection}>
-        <Text style={styles.sectionLabel}>Max Power (future tweak?)</Text>
-        <Text style={styles.sectionSubLabel}>
-          Currently mapped to ±{MAX_PWM}. You can later add a slider to cap
-          this.
-        </Text>
-        <Slider
-          style={styles.slider}
-          minimumValue={50}
-          maximumValue={255}
-          disabled
-          value={MAX_PWM}
-        />
       </View>
     </View>
   );
