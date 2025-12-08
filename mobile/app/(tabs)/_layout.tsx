@@ -17,7 +17,7 @@ export default function TabLayout() {
         tabBarButton: HapticTab,
       }}>
       <Tabs.Screen
-        name="CarController"
+        name="index"
         options={{
           title: 'Control',
           tabBarIcon: ({ color }) => (
@@ -26,7 +26,7 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="index"
+        name="mp3"
         options={{
           title: 'Aux',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="music.note" color={color} />,
