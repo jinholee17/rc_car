@@ -3,11 +3,13 @@
 #include "DFRobotDFPlayerMini.h"
 
 // WiFi credentials
-const char* ssid     = "Anika-iPhone";
-const char* password = "12345678";
+// const char* ssid     = "Anika-iPhone";
+// const char* password = "12345678";
+const char* ssid     =  "Verizon_FYCW9R"; //"Brown Bear";
+const char* password =  "mavis4-dun-fax"; //BbBbWDYS?3";
 
 // pins 2 and 3 to communicate with DFPlayer 
-static const uint8_t PIN_MP3_TX = 2; // Arduino → DFPlayer RX
+static const uint8_t PIN_MP3_TX = 6; // Arduino → DFPlayer RX
 static const uint8_t PIN_MP3_RX = 3; // DFPlayer TX → Arduino
 SoftwareSerial softwareSerial(PIN_MP3_RX, PIN_MP3_TX);
 

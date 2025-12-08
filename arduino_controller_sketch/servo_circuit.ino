@@ -2,6 +2,7 @@
 #include "fsm.h"
 #include <WiFiS3.h>
 #include <Servo.h>
+#include <WDT.h>
 
 bool testAllCarFSM();
 
@@ -30,6 +31,9 @@ Servo steeringServo;
 
 // Networking
 WiFiServer server(8080);
+
+//WDT
+const int wdtInterval = 5000;
 
 // Command inputs from app (latest requested values)
 int latestThrottleCmd = 0;  // -255..255
@@ -300,20 +304,20 @@ void setup() {
   // COMMENT OUT LINES 236-249 TO SKIP TESTING, UNCOMMENT FOR TESTING
   
   // ---------- Testing code start ----------
-  delay(2000);
-  // Run FSM tests
-  bool ok = testAllCarFSM();
+  // delay(2000);
+  // // Run FSM tests
+  // bool ok = testAllCarFSM();
 
-  if (ok) {
-    Serial.println("testAllCarFSM() reported: ALL PASSED");
-  } else {
-    Serial.println("testAllCarFSM() reported: SOME FAILED");
-  }
+  // if (ok) {
+  //   Serial.println("testAllCarFSM() reported: ALL PASSED");
+  // } else {
+  //   Serial.println("testAllCarFSM() reported: SOME FAILED");
+  // }
 
-  // Stop here so loop() doesn't run the car logic
-  while (true) {
-    // do nothing
-  }
+  // // Stop here so loop() doesn't run the car logic
+  // while (true) {
+  //   // do nothing
+  // }
   // ---------- Testing code end ----------
 
 
@@ -333,13 +337,14 @@ void setup() {
 
   server.begin();
   Serial.println("HTTP server listening on port 8080");
+  WDT.begin(wdtInterval);
 }
 
 void loop() {
   // 1. Handle at most one incoming HTTP request (non-blocking pattern)
   handleClientOnce();
 
-  wdt_enable(WDTO_8S);
+  // wdt_enable(WDTO_8S);
 
   // 2. Read sensors (ultrasonic)
   //float distanceCm = measureDistanceCm();
@@ -361,7 +366,8 @@ void loop() {
   setThrottleOutput(carState.throttle);
   setSteeringOutput(carState.turn);
 
-  wdt_reset();
+  // wdt_reset();
+  WDT.refresh();
 
   // 5. Small delay to keep loop from spinning too hard
   delay(10);
