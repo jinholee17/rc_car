@@ -1,654 +1,327 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Animated } from 'react-native';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  PanResponder,
+  GestureResponderEvent,
+  PanResponderGestureState,
+  TouchableOpacity,
+} from 'react-native';
 import Slider from '@react-native-community/slider';
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
 
-// Your Arduino HTTP server (same as CarController)
-const ARDUINO_IP = '172.20.10.6'; // Update this to match your Arduino IP
+// Your Arduino HTTP server
+const ARDUINO_IP = '192.168.1.18';
 const PORT = 8080;
 
-// Track names - matches Arduino order
-const TRACK_NAMES: { [key: number]: string } = {
-  1: 'deep in it by berlioz',
-  2: 'I Am in Love by Jennifer Lara',
-  3: 'Broccoli by Lil Yachty',
-  4: 'Fashion Killa by A$AP Rocky',
-  5: 'Jukebox Joints by A$AP ROCKY',
-  6: 'Pyramids by Frank Ocean',
-  7: 'Where Are You 54 Ultra',
-};
-
-const TOTAL_TRACKS = 7;
-
-// Helper to get song name from track number
-const getSongName = (trackNumber: number): string => {
-  return TRACK_NAMES[trackNumber] || `Track ${trackNumber}`;
-};
-
-interface MP3PlayerState {
-  isPlaying: boolean;
-  currentTrack: number;
-  totalTracks: number;
-  isLoading: boolean;
-  volume: number;
-  trackName?: string; // Track name from Arduino
+// Helper: clamp a value to [-max, max]
+function clamp(val: number, max: number): number {
+  if (val > max) return max;
+  if (val < -max) return -max;
+  return val;
 }
 
-const MP3Player: React.FC = () => {
-  const [playerState, setPlayerState] = useState<MP3PlayerState>({
-    isPlaying: false,
-    currentTrack: 1,
-    totalTracks: TOTAL_TRACKS,
-    isLoading: false,
-    volume: 30, // DFPlayer Mini volume range: 0-30
-  });
+// ---------------- Joystick-based UI ----------------
 
-  // Animation values for smooth button interactions
-  const playPauseScale = useRef(new Animated.Value(1)).current;
-  const nextScale = useRef(new Animated.Value(1)).current;
-  const prevScale = useRef(new Animated.Value(1)).current;
-  const trackNameOpacity = useRef(new Animated.Value(1)).current;
+// We'll now treat this as HALF the width/height of the square
+const JOYSTICK_HALF_SIZE = 80;
+const KNOB_RADIUS = 28;
+const MAX_PWM = 255;
 
-  // Fetch current state from Arduino
-  const fetchPlayerStatus = useCallback(async () => {
-    try {
-      const url = `http://${ARDUINO_IP}:${PORT}/mp3/status`;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2 second timeout
-      
-      const response = await fetch(url, {
-        signal: controller.signal,
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        const data = await response.json();
-        console.log('Status data:', data); // Debug: see what Arduino is sending
-        setPlayerState((prev) => {
-          // Only update if values actually changed (prevents unnecessary re-renders)
-          const newIsPlaying = data.isPlaying === true;
-          const newVolume = data.volume !== undefined ? data.volume : prev.volume;
-          const newTrack = data.currentTrack !== undefined ? data.currentTrack : prev.currentTrack;
-          const trackName = data.trackName || getSongName(newTrack);
-          
-          console.log('Track name from Arduino:', data.trackName, 'Track number:', newTrack); // Debug
-          
-          // Always update trackName even if other values haven't changed
-          const shouldUpdate = prev.isPlaying !== newIsPlaying || 
-                               prev.volume !== newVolume || 
-                               prev.currentTrack !== newTrack ||
-                               prev.trackName !== trackName;
-          
-          if (!shouldUpdate) {
-            return prev; // No change, return same state
-          }
-          
-          return {
-            ...prev,
-            isPlaying: newIsPlaying,
-            volume: newVolume,
-            currentTrack: newTrack,
-            trackName: trackName, // Store track name from Arduino
-          };
-        });
-      }
-    } catch (error) {
-      // Silently fail - don't spam console with errors
-      // If we can't connect, keep current state (don't reset)
-    }
+const CarController: React.FC = () => {
+  // Joystick state: offset from center in px
+  const [stickX, setStickX] = useState(0);
+  const [stickY, setStickY] = useState(0);
+
+  // Derived PWM values (for display + sending)
+  const [pwmUD, setPwmUD] = useState(0); // throttle (forward/back)
+  const [pwmLR, setPwmLR] = useState(0); // steering (left/right)
+
+  // Keep the last sent values to avoid spamming identical commands
+  const lastSentUD = useRef<number>(0);
+  const lastSentLR = useRef<number>(0);
+
+  const connectionLabel = useMemo(() => {
+    return `Sending commands via HTTP to http://${ARDUINO_IP}:${PORT}/drive`;
   }, []);
 
-  // Send HTTP request to Arduino for MP3 control
-  const sendMP3Command = useCallback(async (command: 'play' | 'pause' | 'next' | 'previous') => {
-    const url = `http://${ARDUINO_IP}:${PORT}/mp3?cmd=${command}`;
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        // Fetch actual state from Arduino after command completes
-        // Reduced delay for faster updates
-        setTimeout(() => {
-          fetchPlayerStatus().then(() => {
-            setPlayerState((prev) => ({ ...prev, isLoading: false }));
-          });
-        }, 250);
-      } else {
-        setPlayerState((prev) => ({ ...prev, isLoading: false }));
-        console.log('Error: MP3 command failed');
+  // Send HTTP request to Arduino /drive endpoint
+  const sendControlCommands = useCallback(
+    async (ud: number, lr: number) => {
+      const udClamped = clamp(ud, MAX_PWM);
+      const lrClamped = clamp(lr, MAX_PWM);
+
+      // optional: don't spam very small changes
+      if (
+        Math.abs(udClamped - lastSentUD.current) < 3 &&
+        Math.abs(lrClamped - lastSentLR.current) < 3
+      ) {
+        return;
       }
-    } catch (error) {
-      console.log('Error sending MP3 command:', error);
-      setPlayerState((prev) => ({ ...prev, isLoading: false }));
-    }
-  }, [fetchPlayerStatus]);
 
-  // Sync state when app loads
-  useEffect(() => {
-    fetchPlayerStatus();
-  }, [fetchPlayerStatus]);
+      lastSentUD.current = udClamped;
+      lastSentLR.current = lrClamped;
 
-  // Poll Arduino state periodically to detect physical button presses
-  // Use longer interval and prevent overlapping requests to reduce lag
-  const isPollingRef = useRef(false);
-  
-  useEffect(() => {
-    const pollInterval = setInterval(() => {
-      // Only poll if not already fetching (prevents request queue)
-      if (!isPollingRef.current && !playerState.isLoading) {
-        isPollingRef.current = true;
-        fetchPlayerStatus().finally(() => {
-          isPollingRef.current = false;
-        });
+      const url = `http://${ARDUINO_IP}:${PORT}/drive?ud=${udClamped}&lr=${lrClamped}`;
+      try {
+        await fetch(url);
+      } catch (e) {
+        console.log('Error sending drive command:', e);
       }
-    }, 2000); // Check every 2 seconds for better responsiveness
+    },
+    [],
+  );
 
-    return () => clearInterval(pollInterval);
-  }, [fetchPlayerStatus, playerState.isLoading]);
+  // Map joystick position → PWM values
+  const updateFromStick = useCallback((x: number, y: number) => {
+    // x,y in [-JOYSTICK_HALF_SIZE, JOYSTICK_HALF_SIZE]
+    // Normalize to [-1,1]
+    const normX = x / JOYSTICK_HALF_SIZE;
+    const normY = y / JOYSTICK_HALF_SIZE;
 
-  // Animate button press
-  const animateButtonPress = (scale: Animated.Value) => {
-    Animated.sequence([
-      Animated.timing(scale, {
-        toValue: 0.85,
-        duration: 100,
-        useNativeDriver: true,
-      }),
-      Animated.timing(scale, {
-        toValue: 1,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  };
+    // Invert Y so up is positive throttle (like a real joystick)
+    const throttle = -normY; // up = 1, down = -1
+    const steering = normX;  // right = 1, left = -1
 
-  // Animate track name update
-  const animateTrackNameUpdate = () => {
-    Animated.sequence([
-      Animated.timing(trackNameOpacity, {
-        toValue: 0.3,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-      Animated.timing(trackNameOpacity, {
-        toValue: 1,
-        duration: 150,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  };
+    const newUD = Math.round(throttle * MAX_PWM);
+    const newLR = Math.round(steering * MAX_PWM);
 
-  // Play a specific track
-  const playTrack = useCallback(async (trackNumber: number) => {
-    if (trackNumber < 1 || trackNumber > TOTAL_TRACKS) return;
-    
-    // Optimistically update UI immediately
-    setPlayerState((prev) => ({
-      ...prev,
-      currentTrack: trackNumber,
-      trackName: getSongName(trackNumber),
-      isPlaying: true,
-      isLoading: true,
-    }));
-    
-    // Animate track name update
-    animateTrackNameUpdate();
-    
-    const url = `http://${ARDUINO_IP}:${PORT}/mp3?track=${trackNumber}`;
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        // Sync state after playing track - reduced delay for faster updates
-        setTimeout(() => {
-          fetchPlayerStatus().then(() => {
-            setPlayerState((prev) => ({ ...prev, isLoading: false }));
-          });
-        }, 300);
-      } else {
-        setPlayerState((prev) => ({ ...prev, isLoading: false }));
-        // Re-fetch to get actual state
-        setTimeout(() => {
-          fetchPlayerStatus();
-        }, 250);
-      }
-    } catch (error) {
-      console.log('Error playing track:', error);
-      setPlayerState((prev) => ({ ...prev, isLoading: false }));
-      // Re-fetch to get actual state
-      setTimeout(() => {
-        fetchPlayerStatus();
-      }, 250);
-    }
-  }, [fetchPlayerStatus]);
-
-  const handlePlayPause = () => {
-    if (playerState.isLoading) return; // Prevent multiple clicks
-    
-    // Optimistically update UI immediately for smooth feedback
-    setPlayerState((prev) => ({
-      ...prev,
-      isPlaying: !prev.isPlaying,
-      isLoading: true,
-    }));
-    
-    // Animate button press
-    animateButtonPress(playPauseScale);
-    
-    // Send play command (Arduino toggles play/pause)
-    sendMP3Command('play');
-  };
-  const handleNext = () => {
-  if (playerState.isLoading) return;
-
-  animateButtonPress(nextScale);
-  animateTrackNameUpdate();
-
-  // Only show loading — DO NOT update track number yet
-  setPlayerState(prev => ({
-    ...prev,
-    isLoading: true
-  }));
-
-  sendMP3Command("next");
-
-  // After Arduino completes, fetch real track #
-  setTimeout(() => {
-    fetchPlayerStatus().then(() => {
-      setPlayerState(prev => ({ ...prev, isLoading: false }));
-    });
-  }, 350); // 300–400ms is correct for DFPlayer
-};
-
-
-
-  const handlePrevious = () => {
-    if (playerState.isLoading) return;
-
-    animateButtonPress(prevScale);
-    animateTrackNameUpdate();
-
-    setPlayerState(prev => ({
-      ...prev,
-      isLoading: true
-    }));
-
-    sendMP3Command("previous");
-
-    setTimeout(() => {
-      fetchPlayerStatus().then(() => {
-        setPlayerState(prev => ({ ...prev, isLoading: false }));
-      });
-    }, 350);
-  };
-
-
-  // Send volume command to Arduino
-  const sendVolumeCommand = useCallback(async (volume: number) => {
-    const url = `http://${ARDUINO_IP}:${PORT}/mp3?volume=${Math.round(volume)}`;
-    try {
-      await fetch(url);
-    } catch (error) {
-      console.log('Error sending volume command:', error);
-    }
+    setPwmUD(newUD);
+    setPwmLR(newLR);
   }, []);
 
-  // Update UI immediately for smooth visual feedback (no HTTP request)
-  const handleVolumeChange = (value: number) => {
-    const roundedValue = Math.round(value);
-    setPlayerState((prev) => ({ ...prev, volume: roundedValue }));
-  };
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderMove: (
+          _evt: GestureResponderEvent,
+          gestureState: PanResponderGestureState,
+        ) => {
+          let { dx, dy } = gestureState;
 
-  // Send HTTP request only when user finishes sliding (lifts finger)
-  const handleVolumeSlidingComplete = (value: number) => {
-    const roundedValue = Math.round(value);
-    sendVolumeCommand(roundedValue);
-  };
+          // Square clamp instead of circular:
+          // Keep dx, dy within [-JOYSTICK_HALF_SIZE, JOYSTICK_HALF_SIZE]
+          dx = Math.max(-JOYSTICK_HALF_SIZE, Math.min(JOYSTICK_HALF_SIZE, dx));
+          dy = Math.max(-JOYSTICK_HALF_SIZE, Math.min(JOYSTICK_HALF_SIZE, dy));
+
+          setStickX(dx);
+          setStickY(dy);
+          updateFromStick(dx, dy);
+        },
+        onPanResponderRelease: () => {
+          // don't auto-reset; user can hit STOP
+        },
+        onPanResponderTerminate: () => {
+          // if gesture is interrupted, snap to center but don't send yet
+          setStickX(0);
+          setStickY(0);
+          setPwmUD(0);
+          setPwmLR(0);
+        },
+      }),
+    [updateFromStick],
+  );
+
+  // Periodically send the current joystick state
+  useEffect(() => {
+    const interval = setInterval(() => {
+      sendControlCommands(pwmUD, pwmLR);
+    }, 100); // 100 ms → 10 times per second
+
+    return () => clearInterval(interval);
+  }, [pwmUD, pwmLR, sendControlCommands]);
+
+  // --- STOP button handler: reset to neutral and send 0,0 immediately ---
+  const handleStop = useCallback(() => {
+    setStickX(0);
+    setStickY(0);
+    setPwmUD(0);
+    setPwmLR(0);
+    // send immediate stop command
+    sendControlCommands(0, 0);
+  }, [sendControlCommands]);
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <ThemedText type="title" style={styles.title}>Music</ThemedText>
-        <View style={styles.statusBadge}>
-          <View style={[styles.statusDot, playerState.isPlaying && styles.statusDotActive]} />
-          <ThemedText style={styles.statusText}>
-            {playerState.isPlaying ? 'Playing' : 'Paused'}
-          </ThemedText>
-        </View>
-      </View>
+      <Text style={styles.title}>RC Car Controller</Text>
 
-      {/* Current Track Display */}
-      <View style={styles.trackInfoContainer}>
-        <ThemedText style={styles.trackLabel}>Now Playing</ThemedText>
-        <Animated.Text 
-          style={[
-            styles.trackTitle,
-            { opacity: trackNameOpacity }
-          ]} 
-          numberOfLines={2}>
-          {playerState.trackName || getSongName(playerState.currentTrack)}
-        </Animated.Text>
-        <ThemedText style={styles.trackSubtitle}>
-          Track {playerState.currentTrack}
-        </ThemedText>
-        {playerState.isLoading && (
-          <ActivityIndicator size="small" color="#22C55E" style={styles.loader} />
-        )}
-      </View>
+      <Text style={[styles.connectionStatus, styles.connected]}>
+        {connectionLabel}
+      </Text>
 
-      {/* Control Buttons */}
-      <View style={styles.controlsContainer}>
-        <TouchableOpacity
-          onPress={handlePrevious}
-          disabled={playerState.isLoading}
-          activeOpacity={0.7}>
-          <Animated.View
+      {/* Joystick */}
+      <View style={styles.joystickSection}>
+        <Text style={styles.sectionLabel}>Joystick</Text>
+        <Text style={styles.sectionSubLabel}>
+          Up/Down = Throttle • Left/Right = Steering
+        </Text>
+
+        {/* Square joystick area */}
+        <View style={styles.joystickOuter} {...panResponder.panHandlers}>
+          {/* Crosshair lines */}
+          <View style={styles.joystickVerticalLine} />
+          <View style={styles.joystickHorizontalLine} />
+
+          {/* Knob */}
+          <View
             style={[
-              styles.controlButton,
-              { transform: [{ scale: prevScale }] }
-            ]}>
-            <MaterialIcons
-              name="skip-previous"
-              size={24}
-              color={playerState.isLoading ? '#666' : '#FFFFFF'}
-            />
-          </Animated.View>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={handlePlayPause}
-          disabled={playerState.isLoading}
-          activeOpacity={0.8}>
-          <Animated.View
-            style={[
-              styles.playPauseButton,
-              { transform: [{ scale: playPauseScale }] }
-            ]}>
-            {playerState.isLoading ? (
-              <ActivityIndicator size="large" color="#FFFFFF" />
-            ) : (
-              <MaterialIcons
-                name={playerState.isPlaying ? 'pause' : 'play-arrow'}
-                size={36}
-                color="#FFFFFF"
-              />
-            )}
-          </Animated.View>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          onPress={handleNext}
-          disabled={playerState.isLoading}
-          activeOpacity={0.7}>
-          <Animated.View
-            style={[
-              styles.controlButton,
-              { transform: [{ scale: nextScale }] }
-            ]}>
-            <MaterialIcons
-              name="skip-next"
-              size={24}
-              color={playerState.isLoading ? '#666' : '#FFFFFF'}
-            />
-          </Animated.View>
-        </TouchableOpacity>
-      </View>
-
-      {/* Song List */}
-      <View style={styles.songListContainer}>
-        <ThemedText style={styles.songListTitle}>Select Song</ThemedText>
-        <ScrollView style={styles.songList} showsVerticalScrollIndicator={false}>
-          {Array.from({ length: TOTAL_TRACKS }, (_, i) => i + 1).map((trackNum) => (
-            <TouchableOpacity
-              key={trackNum}
-              style={[
-                styles.songItem,
-                playerState.currentTrack === trackNum && styles.songItemActive,
-                trackNum === TOTAL_TRACKS && styles.songItemLast,
-              ]}
-              onPress={() => playTrack(trackNum)}
-              disabled={playerState.isLoading}>
-              <View style={styles.songItemContent}>
-                <MaterialIcons
-                  name={playerState.currentTrack === trackNum ? 'music-note' : 'queue-music'}
-                  size={20}
-                  color={playerState.currentTrack === trackNum ? '#22C55E' : '#9CA3AF'}
-                />
-                <ThemedText
-                  style={[
-                    styles.songItemText,
-                    playerState.currentTrack === trackNum && styles.songItemTextActive,
-                  ]}
-                  numberOfLines={1}>
-                  {getSongName(trackNum)}
-                </ThemedText>
-              </View>
-              {playerState.currentTrack === trackNum && (
-                <MaterialIcons name="play-arrow" size={18} color="#22C55E" />
-              )}
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
-      {/* Volume Control */}
-      <View style={styles.volumeContainer}>
-        <View style={styles.volumeHeader}>
-          <MaterialIcons name="volume-up" size={18} color="#9CA3AF" />
-          <ThemedText style={styles.volumeLabel}>Volume</ThemedText>
-          <ThemedText style={styles.volumeValue}>{Math.round(playerState.volume)}</ThemedText>
-        </View>
-        <View style={styles.sliderWrapper}>
-          <Slider
-            style={styles.volumeSlider}
-            minimumValue={0}
-            maximumValue={30}
-            value={playerState.volume}
-            onValueChange={handleVolumeChange}
-            onSlidingComplete={handleVolumeSlidingComplete}
-            minimumTrackTintColor="#22C55E"
-            maximumTrackTintColor="#1E293B"
-            thumbTintColor="#22C55E"
-            step={1}
+              styles.joystickKnob,
+              {
+                transform: [
+                  { translateX: stickX },
+                  { translateY: stickY },
+                ],
+              },
+            ]}
           />
         </View>
+
+        <View style={styles.valuesRow}>
+          <View style={styles.valueBox}>
+            <Text style={styles.valueLabel}>Throttle (PWM_UD)</Text>
+            <Text style={styles.valueText}>{pwmUD}</Text>
+          </View>
+          <View style={styles.valueBox}>
+            <Text style={styles.valueLabel}>Steering (PWM_LR)</Text>
+            <Text style={styles.valueText}>{pwmLR}</Text>
+          </View>
+        </View>
+
+        {/* STOP button */}
+        <TouchableOpacity style={styles.stopButton} onPress={handleStop}>
+          <Text style={styles.stopButtonText}>STOP</Text>
+        </TouchableOpacity>
       </View>
     </View>
   );
 };
 
-export default MP3Player;
+export default CarController;
+
+// ---------------- Styles ----------------
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 50,
-    paddingBottom: 30,
+    paddingHorizontal: 24,
+    paddingTop: 48,
     backgroundColor: '#020617',
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 32,
-    paddingHorizontal: 4,
-  },
   title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: -0.3,
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
-    backgroundColor: '#0F172A',
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#6B7280',
-  },
-  statusDotActive: {
-    backgroundColor: '#22C55E',
-  },
-  statusText: {
-    fontSize: 11,
-    color: '#9CA3AF',
+    fontSize: 24,
     fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  trackInfoContainer: {
-    padding: 24,
-    borderRadius: 20,
-    backgroundColor: '#0F172A',
-    marginBottom: 32,
-    alignItems: 'center',
-    minHeight: 160,
-    justifyContent: 'center',
-  },
-  trackLabel: {
-    fontSize: 11,
-    color: '#6B7280',
     marginBottom: 10,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    fontWeight: '600',
-  },
-  trackTitle: {
-    fontSize: 22,
-    fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 6,
     textAlign: 'center',
-    paddingHorizontal: 8,
   },
-  trackSubtitle: {
-    fontSize: 13,
-    color: '#9CA3AF',
-    fontWeight: '500',
-  },
-  loader: {
-    marginTop: 12,
-  },
-  controlsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 28,
-    marginBottom: 32,
-  },
-  controlButton: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#1E293B',
-  },
-  playPauseButton: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
-    backgroundColor: '#22C55E',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#22C55E',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 6,
-    elevation: 6,
-  },
-  volumeContainer: {
-    padding: 20,
-    borderRadius: 16,
-    backgroundColor: '#0F172A',
-  },
-  volumeHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  connectionStatus: {
+    fontSize: 12,
     marginBottom: 16,
+    textAlign: 'center',
   },
-  volumeLabel: {
+  connected: {
+    color: '#9CA3AF',
+  },
+  joystickSection: {
+    padding: 16,
+    borderRadius: 18,
+    backgroundColor: '#0F172A',
+    marginBottom: 24,
+  },
+  sectionLabel: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#E5E7EB',
+    marginBottom: 4,
+  },
+  sectionSubLabel: {
     fontSize: 12,
     color: '#9CA3AF',
-    fontWeight: '600',
-    flex: 1,
-    marginLeft: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  volumeValue: {
-    fontSize: 14,
-    color: '#22C55E',
-    fontWeight: '700',
-    minWidth: 28,
-    textAlign: 'right',
-  },
-  sliderWrapper: {
-    width: '100%',
-    paddingVertical: 2,
-  },
-  volumeSlider: {
-    width: '100%',
-    height: 36,
-  },
-  songListContainer: {
-    marginBottom: 24,
-    maxHeight: 200,
-  },
-  songListTitle: {
-    fontSize: 12,
-    color: '#6B7280',
     marginBottom: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    fontWeight: '600',
-    paddingHorizontal: 4,
   },
-  songList: {
-    borderRadius: 16,
-    backgroundColor: '#0F172A',
-    maxHeight: 180,
-  },
-  songItem: {
-    flexDirection: 'row',
+  joystickOuter: {
+    width: JOYSTICK_HALF_SIZE * 2,
+    height: JOYSTICK_HALF_SIZE * 2,
+    borderRadius: 12, // small rounding, still visually square-ish
+    borderWidth: 2,
+    borderColor: '#1E293B',
+    alignSelf: 'center',
+    justifyContent: 'center',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E293B',
+    backgroundColor: '#020617',
+    overflow: 'hidden',
   },
-  songItemLast: {
-    borderBottomWidth: 0,
+  joystickVerticalLine: {
+    position: 'absolute',
+    width: 2,
+    height: '100%',
+    backgroundColor: '#111827',
   },
-  songItemActive: {
-    backgroundColor: '#1E293B',
+  joystickHorizontalLine: {
+    position: 'absolute',
+    height: 2,
+    width: '100%',
+    backgroundColor: '#111827',
   },
-  songItemContent: {
+  joystickKnob: {
+    width: KNOB_RADIUS * 2,
+    height: KNOB_RADIUS * 2,
+    borderRadius: KNOB_RADIUS,
+    backgroundColor: '#22C55E',
+    borderWidth: 3,
+    borderColor: '#15803D',
+  },
+  valuesRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
+    marginTop: 16,
     gap: 12,
   },
-  songItemText: {
-    fontSize: 14,
-    color: '#9CA3AF',
-    fontWeight: '500',
+  valueBox: {
     flex: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: '#020617',
   },
-  songItemTextActive: {
-    color: '#FFFFFF',
+  valueLabel: {
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginBottom: 4,
+  },
+  valueText: {
+    fontSize: 18,
     fontWeight: '600',
+    color: '#F9FAFB',
+  },
+  extraSection: {
+    padding: 16,
+    borderRadius: 18,
+    backgroundColor: '#020617',
+  },
+  slider: {
+    width: '100%',
+    height: 36,
+    marginTop: 8,
+  },
+  stopButton: {
+    marginTop: 16,
+    alignSelf: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+    borderRadius: 999,
+    backgroundColor: '#DC2626',
+  },
+  stopButtonText: {
+    color: '#F9FAFB',
+    fontWeight: '700',
+    fontSize: 16,
   },
 });
