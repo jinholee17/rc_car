@@ -5,9 +5,80 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 const CAMERA_URL = 'http://192.168.1.28';
 
-// Injected JavaScript that runs TensorFlow.js object detection
+// Injected JavaScript that extracts video stream and runs object detection
 const INJECTED_JAVASCRIPT = `
 (async function() {
+  // First, hide all the controls and make video fullscreen
+  function setupFullscreenVideo() {
+    // Hide the entire body
+    document.body.style.margin = '0';
+    document.body.style.padding = '0';
+    document.body.style.overflow = 'hidden';
+    document.body.style.backgroundColor = '#000';
+    
+    // Find the video/image stream element
+    const streamElement = document.querySelector('img') || document.querySelector('video');
+    
+    if (streamElement) {
+      // Remove all other elements
+      document.body.innerHTML = '';
+      
+      // Create a container for the stream
+      const container = document.createElement('div');
+      container.style.position = 'fixed';
+      container.style.top = '0';
+      container.style.left = '0';
+      container.style.width = '100vw';
+      container.style.height = '100vh';
+      container.style.display = 'flex';
+      container.style.justifyContent = 'center';
+      container.style.alignItems = 'center';
+      container.style.backgroundColor = '#000';
+      
+      // Style the stream element
+      streamElement.style.maxWidth = '100%';
+      streamElement.style.maxHeight = '100%';
+      streamElement.style.width = 'auto';
+      streamElement.style.height = 'auto';
+      streamElement.style.objectFit = 'contain';
+      
+      container.appendChild(streamElement);
+      document.body.appendChild(container);
+      
+      return streamElement;
+    }
+    return null;
+  }
+  
+  // Find and click the "Start Stream" button
+  function clickStartButton() {
+    // Look for common button text variations
+    const buttons = Array.from(document.querySelectorAll('button, input[type="button"]'));
+    const startButton = buttons.find(btn => 
+      btn.textContent.toLowerCase().includes('start') || 
+      btn.value?.toLowerCase().includes('start')
+    );
+    
+    if (startButton) {
+      startButton.click();
+      return true;
+    }
+    return false;
+  }
+  
+  // Click the start button and wait for stream to initialize
+  clickStartButton();
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  const videoElement = setupFullscreenVideo();
+  
+  if (!videoElement) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ 
+      type: 'error', 
+      message: 'Could not find video stream' 
+    }));
+    return;
+  }
+  
   // Load TensorFlow.js and COCO-SSD model
   const script1 = document.createElement('script');
   script1.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js';
@@ -28,9 +99,10 @@ const INJECTED_JAVASCRIPT = `
   
   // Create canvas overlay for drawing detections
   const canvas = document.createElement('canvas');
-  canvas.style.position = 'absolute';
-  canvas.style.top = '0';
-  canvas.style.left = '0';
+  canvas.style.position = 'fixed';
+  canvas.style.top = '50%';
+  canvas.style.left = '50%';
+  canvas.style.transform = 'translate(-50%, -50%)';
   canvas.style.pointerEvents = 'none';
   canvas.style.zIndex = '1000';
   document.body.appendChild(canvas);
@@ -53,22 +125,27 @@ const INJECTED_JAVASCRIPT = `
     } catch (e) {}
   });
   
-  // Find the video stream element
-  function findVideoElement() {
-    const img = document.querySelector('img');
-    const video = document.querySelector('video');
-    return video || img;
-  }
-  
   // Draw detections on canvas
-  function drawDetections(predictions, videoElement) {
-    canvas.width = videoElement.width || videoElement.offsetWidth;
-    canvas.height = videoElement.height || videoElement.offsetHeight;
+  function drawDetections(predictions) {
+    // Match canvas size to video element size
+    const rect = videoElement.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
     
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
+    // Calculate scale factors
+    const scaleX = rect.width / videoElement.naturalWidth || 1;
+    const scaleY = rect.height / videoElement.naturalHeight || 1;
+    
     predictions.forEach(prediction => {
-      const [x, y, width, height] = prediction.bbox;
+      let [x, y, width, height] = prediction.bbox;
+      
+      // Scale coordinates to match displayed size
+      x *= scaleX;
+      y *= scaleY;
+      width *= scaleX;
+      height *= scaleY;
       
       // Draw bounding box
       ctx.strokeStyle = '#00FF00';
@@ -99,26 +176,23 @@ const INJECTED_JAVASCRIPT = `
       return;
     }
     
-    const videoElement = findVideoElement();
-    if (videoElement) {
-      try {
-        const predictions = await model.detect(videoElement);
-        drawDetections(predictions, videoElement);
-        
-        // Send detection results to React Native
-        if (predictions.length > 0) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'detections',
-            count: predictions.length,
-            objects: predictions.map(p => ({
-              class: p.class,
-              score: Math.round(p.score * 100)
-            }))
-          }));
-        }
-      } catch (e) {
-        console.error('Detection error:', e);
+    try {
+      const predictions = await model.detect(videoElement);
+      drawDetections(predictions);
+      
+      // Send detection results to React Native
+      if (predictions.length > 0) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'detections',
+          count: predictions.length,
+          objects: predictions.map(p => ({
+            class: p.class,
+            score: Math.round(p.score * 100)
+          }))
+        }));
       }
+    } catch (e) {
+      console.error('Detection error:', e);
     }
     
     requestAnimationFrame(detectObjects);
@@ -156,6 +230,8 @@ export default function CameraScreen() {
         setModelStatus(data.message);
       } else if (data.type === 'detections') {
         setDetections(data.objects);
+      } else if (data.type === 'error') {
+        setError(data.message);
       }
     } catch (e) {
       console.error('Message parsing error:', e);
