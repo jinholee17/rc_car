@@ -5,7 +5,7 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
 // Update this IP address to match your ESP32-CAM's IP
 // Check Serial Monitor when ESP32-CAM boots to see its IP address
-const CAMERA_URL = 'http://172.20.10.4'; // <`- replace with your ESP32-CAM IP
+const CAMERA_URL = 'http://192.168.1.28'; //'http://172.20.10.4'; // <`- replace with your ESP32-CAM IP
 
 export default function CameraScreen() {
   const [loading, setLoading] = useState(true);
