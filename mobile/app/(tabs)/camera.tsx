@@ -1,27 +1,401 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Switch, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import Slider from '@react-native-community/slider';
+import { useDriveCommands } from '../../hooks/use-drive-commands';
+import { useFocusEffect } from '@react-navigation/native';
 
-// Update this IP address to match your ESP32-CAM's IP
-// Check Serial Monitor when ESP32-CAM boots to see its IP address
-const CAMERA_URL = 'http://192.168.1.28'; //'http://172.20.10.4'; // <`- replace with your ESP32-CAM IP
+
+
+const CAMERA_URL = 'http://192.168.1.28';
+
+// Injected JavaScript that extracts video stream and runs object detection
+const INJECTED_JAVASCRIPT = `
+(async function() {
+  // First, hide all the controls and make video fullscreen
+  function setupFullscreenVideo() {
+    // Hide the entire body
+    document.body.style.margin = '0';
+    document.body.style.padding = '0';
+    document.body.style.overflow = 'hidden';
+    document.body.style.backgroundColor = '#000';
+    
+    // Find the video/image stream element
+    const streamElement = document.querySelector('img') || document.querySelector('video');
+    
+    if (streamElement) {
+      // Remove all other elements
+      document.body.innerHTML = '';
+      
+      // Create a container for the stream
+      const container = document.createElement('div');
+      container.style.position = 'fixed';
+      container.style.top = '0';
+      container.style.left = '0';
+      container.style.width = '100vw';
+      container.style.height = '100vh';
+      container.style.display = 'flex';
+      container.style.justifyContent = 'center';
+      container.style.alignItems = 'center';
+      container.style.backgroundColor = '#000';
+      
+      // Style the stream element
+      streamElement.style.maxWidth = '100%';
+      streamElement.style.maxHeight = '100%';
+      streamElement.style.width = 'auto';
+      streamElement.style.height = 'auto';
+      streamElement.style.objectFit = 'contain';
+      
+      container.appendChild(streamElement);
+      document.body.appendChild(container);
+      
+      return streamElement;
+    }
+    return null;
+  }
+  
+  // Find and click the "Start Stream" button
+  function clickStartButton() {
+    // Look for common button text variations
+    const buttons = Array.from(document.querySelectorAll('button, input[type="button"]'));
+    const startButton = buttons.find(btn => 
+      btn.textContent.toLowerCase().includes('start') || 
+      btn.value?.toLowerCase().includes('start')
+    );
+    
+    if (startButton) {
+      startButton.click();
+      return true;
+    }
+    return false;
+  }
+  
+  // Click the start button and wait for stream to initialize
+  clickStartButton();
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  const videoElement = setupFullscreenVideo();
+  
+  if (!videoElement) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ 
+      type: 'error', 
+      message: 'Could not find video stream' 
+    }));
+    return;
+  }
+  
+  // Load TensorFlow.js and COCO-SSD model
+  const script1 = document.createElement('script');
+  script1.src = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js';
+  document.head.appendChild(script1);
+  
+  await new Promise(resolve => script1.onload = resolve);
+  
+  const script2 = document.createElement('script');
+  script2.src = 'https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js';
+  document.head.appendChild(script2);
+  
+  await new Promise(resolve => script2.onload = resolve);
+  
+  // Load the model
+  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Loading AI model...' }));
+  const model = await cocoSsd.load();
+  window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'status', message: 'Model loaded!' }));
+  
+  // Create canvas overlay for drawing detections
+  const canvas = document.createElement('canvas');
+  canvas.style.position = 'fixed';
+  canvas.style.top = '50%';
+  canvas.style.left = '50%';
+  canvas.style.transform = 'translate(-50%, -50%)';
+  canvas.style.pointerEvents = 'none';
+  canvas.style.zIndex = '1000';
+  document.body.appendChild(canvas);
+  
+  const ctx = canvas.getContext('2d');
+  
+  let detectionEnabled = true;
+  let showLabels = true;
+  let autoFollowEnabled = false;
+  
+  // Listen for messages from React Native
+  window.addEventListener('message', (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'toggleDetection') {
+        detectionEnabled = data.enabled;
+      }
+      if (data.type === 'toggleLabels') {
+        showLabels = data.enabled;
+      }
+      if (data.type === 'toggleAutoFollow') {
+        autoFollowEnabled = data.enabled;
+      }
+    } catch (e) {}
+  });
+  
+  // Draw detections on canvas
+  function drawDetections(predictions) {
+    // Match canvas size to video element size
+    const rect = videoElement.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
+    
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Calculate scale factors
+    const scaleX = rect.width / videoElement.naturalWidth || 1;
+    const scaleY = rect.height / videoElement.naturalHeight || 1;
+    
+    predictions.forEach(prediction => {
+      let [x, y, width, height] = prediction.bbox;
+      
+      // Scale coordinates to match displayed size
+      x *= scaleX;
+      y *= scaleY;
+      width *= scaleX;
+      height *= scaleY;
+      
+      // Highlight person in blue if auto-follow is enabled
+      const isTargetPerson = autoFollowEnabled && prediction.class === 'person';
+      
+      // Draw bounding box
+      ctx.strokeStyle = isTargetPerson ? '#3B82F6' : '#00FF00';
+      ctx.lineWidth = isTargetPerson ? 4 : 3;
+      ctx.strokeRect(x, y, width, height);
+      
+      if (showLabels) {
+        // Draw label background
+        const label = \`\${prediction.class} \${Math.round(prediction.score * 100)}%\`;
+        ctx.font = '16px Arial';
+        const textWidth = ctx.measureText(label).width;
+        
+        ctx.fillStyle = isTargetPerson ? '#3B82F6' : '#00FF00';
+        ctx.fillRect(x, y - 25, textWidth + 10, 25);
+        
+        // Draw label text
+        ctx.fillStyle = '#000000';
+        ctx.fillText(label, x + 5, y - 7);
+      }
+    });
+  }
+  
+  // Calculate auto-follow steering based on person detection
+  let follow_dead_zone = 0
+  function calculateFollowData(predictions) {
+    if (!autoFollowEnabled) return null;
+    
+    // Find the person with highest confidence
+    const people = predictions.filter(p => p.class === 'person');
+    if (people.length === 0) return null;
+    
+    const targetPerson = people.reduce((prev, current) => 
+      (prev.score > current.score) ? prev : current
+    );
+    
+    const [x, y, width, height] = targetPerson.bbox;
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+    
+    // Get video dimensions
+    const videoWidth = videoElement.naturalWidth || videoElement.width;
+    const videoHeight = videoElement.naturalHeight || videoElement.height;
+    const videoCenterX = videoWidth / 2;
+    
+    // Calculate horizontal offset from center (-1 to 1)
+    const offsetX = (centerX - videoCenterX) / videoCenterX;
+    
+    // Convert to turn angle (-45 to 45 degrees)
+    const turnAngle = Math.round(offsetX * 45);
+    
+    // Calculate distance estimate based on bounding box size
+    // Larger box = closer, smaller box = farther
+    const boxArea = width * height;
+    const videoArea = videoWidth * videoHeight;
+    const areaRatio = boxArea / videoArea;
+    
+    // Determine if should drive forward
+    // Drive if person is detected but not too close (area < 30% of screen)
+    const shouldDrive = areaRatio < 0.4 - follow_dead_zone;
+
+    follow_dead_zone = shouldDrive ? 0 : 0.1
+    
+    // Distance categories
+    let distance = 'Far';
+    if (areaRatio > 0.35) distance = 'Very Close';
+    else if (areaRatio > 0.25) distance = 'Close';
+    else if (areaRatio > 0.16) distance = 'Medium';
+    
+    return {
+      turnAngle,
+      shouldDrive,
+      distance,
+      confidence: Math.round(targetPerson.score * 100)
+    };
+  }
+  
+  // Run detection loop
+  async function detectObjects() {
+    if (!detectionEnabled) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      setTimeout(detectObjects, 100);
+      return;
+    }
+    
+    try {
+      const predictions = await model.detect(videoElement);
+      drawDetections(predictions);
+      
+      // Calculate follow data if auto-follow is enabled
+      const followData = calculateFollowData(predictions);
+      if (followData) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'followData',
+          followData
+        }));
+      }
+      
+      // Send detection results to React Native
+      if (predictions.length > 0) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'detections',
+          count: predictions.length,
+          objects: predictions.map(p => ({
+            class: p.class,
+            score: Math.round(p.score * 100)
+          }))
+        }));
+      }
+    } catch (e) {
+      console.error('Detection error:', e);
+    }
+    
+    requestAnimationFrame(detectObjects);
+  }
+  
+  // Start detection
+  detectObjects();
+  
+})();
+true;
+`;
 
 export default function CameraScreen() {
+  const { sendFollowCommand, stopCar } = useDriveCommands();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [modelStatus, setModelStatus] = useState('');
+  const [detections, setDetections] = useState<any[]>([]);
+  const [detectionEnabled, setDetectionEnabled] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
+  const [ledBrightness, setLedBrightness] = useState(0);
+  const [autoFollow, setAutoFollow] = useState(false);
+  const [followData, setFollowData] = useState<{
+    turnAngle: number;
+    shouldDrive: boolean;
+    distance: string;
+  } | null>(null);
   const webViewRef = useRef<WebView>(null);
+
+  // Send follow commands when data updates
+  useEffect(() => {
+    if (autoFollow && followData) {
+      sendFollowCommand(followData.turnAngle, followData.shouldDrive);
+    } else if (autoFollow && !followData) {
+      // No person detected - stop
+      stopCar();
+    }
+  }, [autoFollow, followData, sendFollowCommand, stopCar]);
+  
+   // Disable auto-follow when leaving this screen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        // This runs when leaving the screen
+        if (autoFollow) {
+          setAutoFollow(false);
+          webViewRef.current?.postMessage(JSON.stringify({
+            type: 'toggleAutoFollow',
+            enabled: false
+          }));
+          stopCar(); // Stop the car immediately
+        }
+      };
+    }, [autoFollow, stopCar])
+  );
 
   const handleReload = () => {
     setLoading(true);
     setError(null);
+    setModelStatus('');
+    setDetections([]);
     webViewRef.current?.reload();
+  };
+
+  const handleMessage = (event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      
+      if (data.type === 'status') {
+        setModelStatus(data.message);
+      } else if (data.type === 'detections') {
+        setDetections(data.objects);
+      } else if (data.type === 'error') {
+        setError(data.message);
+      } else if (data.type === 'followData') {
+        setFollowData(data.followData);
+      }
+    } catch (e) {
+      console.error('Message parsing error:', e);
+    }
+  };
+
+  const toggleDetection = () => {
+    const newValue = !detectionEnabled;
+    setDetectionEnabled(newValue);
+    webViewRef.current?.postMessage(JSON.stringify({
+      type: 'toggleDetection',
+      enabled: newValue
+    }));
+  };
+
+  const toggleLabels = () => {
+    const newValue = !showLabels;
+    setShowLabels(newValue);
+    webViewRef.current?.postMessage(JSON.stringify({
+      type: 'toggleLabels',
+      enabled: newValue
+    }));
+  };
+
+  const toggleAutoFollow = () => {
+    const newValue = !autoFollow;
+    setAutoFollow(newValue);
+    webViewRef.current?.postMessage(JSON.stringify({
+      type: 'toggleAutoFollow',
+      enabled: newValue
+    }));
+    if (!newValue) {
+      setFollowData(null);
+    }
+  };
+
+  const changeLedBrightness = async (value: number) => {
+    try {
+      // ESP32-CAM LED control endpoint
+      const response = await fetch(`${CAMERA_URL}/control?var=led_intensity&val=${Math.round(value)}`);
+      if (!response.ok) {
+        console.error('Failed to set LED brightness');
+      }
+    } catch (error) {
+      console.error('Error setting LED brightness:', error);
+    }
   };
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Camera</Text>
+        <Text style={styles.title}>AI Camera</Text>
         <TouchableOpacity
           style={styles.reloadButton}
           onPress={handleReload}
@@ -29,6 +403,135 @@ export default function CameraScreen() {
           <MaterialIcons name="refresh" size={20} color="#FFFFFF" />
         </TouchableOpacity>
       </View>
+
+      {modelStatus && (
+        <View style={styles.statusBar}>
+          <MaterialIcons name="psychology" size={16} color="#22C55E" />
+          <Text style={styles.statusText}>{modelStatus}</Text>
+        </View>
+      )}
+
+      <View style={styles.controls}>
+        <View style={styles.iconControls}>
+          <TouchableOpacity
+            style={[styles.iconButton, detectionEnabled && styles.iconButtonActive]}
+            onPress={toggleDetection}
+            activeOpacity={0.7}>
+            <MaterialIcons 
+              name="visibility" 
+              size={24} 
+              color={detectionEnabled ? '#22C55E' : '#6B7280'} 
+            />
+            <Text style={[styles.iconLabel, detectionEnabled && styles.iconLabelActive]}>
+              Detect
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.iconButton, showLabels && styles.iconButtonActive]}
+            onPress={toggleLabels}
+            activeOpacity={0.7}>
+            <MaterialIcons 
+              name="label" 
+              size={24} 
+              color={showLabels ? '#22C55E' : '#6B7280'} 
+            />
+            <Text style={[styles.iconLabel, showLabels && styles.iconLabelActive]}>
+              Labels
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.iconButton, autoFollow && styles.iconButtonActive]}
+            onPress={toggleAutoFollow}
+            activeOpacity={0.7}>
+            <MaterialIcons 
+              name="my-location" 
+              size={24} 
+              color={autoFollow ? '#3B82F6' : '#6B7280'} 
+            />
+            <Text style={[styles.iconLabel, autoFollow && styles.iconLabelActive]}>
+              Follow
+            </Text>
+          </TouchableOpacity>
+        </View>
+        
+        <View style={styles.controlColumn}>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.controlLabel}>LED Brightness</Text>
+            <Text style={styles.sliderValue}>{ledBrightness}</Text>
+          </View>
+          <View style={styles.sliderContainer}>
+            <MaterialIcons name="lightbulb-outline" size={18} color="#9CA3AF" />
+            <Slider
+              style={styles.slider}
+              minimumValue={0}
+              maximumValue={255}
+              step={1}
+              value={ledBrightness}
+              onValueChange={setLedBrightness}
+              onSlidingComplete={changeLedBrightness}
+              minimumTrackTintColor="#22C55E"
+              maximumTrackTintColor="#374151"
+              thumbTintColor="#22C55E"
+            />
+            <MaterialIcons name="lightbulb" size={18} color="#22C55E" />
+          </View>
+        </View>
+      </View>
+
+      {autoFollow && followData && (
+        <View style={styles.followDataContainer}>
+          <View style={styles.followHeader}>
+            <MaterialIcons name="my-location" size={20} color="#3B82F6" />
+            <Text style={styles.followTitle}>Auto Follow Active</Text>
+          </View>
+          <View style={styles.followStats}>
+            <View style={styles.followStat}>
+              <Text style={styles.followStatLabel}>Turn Angle</Text>
+              <Text style={[
+                styles.followStatValue,
+                { color: followData.turnAngle === 0 ? '#22C55E' : '#3B82F6' }
+              ]}>
+                {followData.turnAngle > 0 ? 'Right ' : followData.turnAngle < 0 ? 'Left ' : 'Center '}
+                {Math.abs(followData.turnAngle)}°
+              </Text>
+            </View>
+            <View style={styles.followStat}>
+              <Text style={styles.followStatLabel}>Drive</Text>
+              <Text style={[
+                styles.followStatValue,
+                { color: followData.shouldDrive ? '#22C55E' : '#EF4444' }
+              ]}>
+                {followData.shouldDrive ? 'Forward' : 'Stop'}
+              </Text>
+            </View>
+            <View style={styles.followStat}>
+              <Text style={styles.followStatLabel}>Distance</Text>
+              <Text style={styles.followStatValue}>
+                {followData.distance}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {detections.length > 0 && detectionEnabled && (
+        <View style={styles.detectionsContainer}>
+          <Text style={styles.detectionsTitle}>
+            Detected ({detections.length} objects):
+          </Text>
+          <View style={styles.detectionsList}>
+            {detections.slice(0, 5).map((obj, idx) => (
+              <View key={idx} style={styles.detectionBadge}>
+                <Text style={styles.detectionText}>
+                  {obj.class} {obj.score}%
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
 
       <View style={styles.webviewContainer}>
         {loading && !error && (
@@ -61,6 +564,8 @@ export default function CameraScreen() {
           mediaPlaybackRequiresUserAction={false}
           startInLoadingState={true}
           scalesPageToFit={true}
+          injectedJavaScript={INJECTED_JAVASCRIPT}
+          onMessage={handleMessage}
           onLoadStart={() => {
             setLoading(true);
             setError(null);
@@ -82,7 +587,7 @@ export default function CameraScreen() {
       </View>
 
       <Text style={styles.helpText}>
-        {error ? 'Check your ESP32-CAM IP address and connection.' : 'Use the ESP32 page controls to start the stream.'}
+        {error ? 'Check your ESP32-CAM IP address and connection.' : 'AI detection powered by TensorFlow.js'}
       </Text>
     </View>
   );
@@ -115,6 +620,153 @@ const styles = StyleSheet.create({
     backgroundColor: '#1E293B',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  statusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1E293B',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  statusText: {
+    color: '#22C55E',
+    fontSize: 12,
+    marginLeft: 8,
+    fontWeight: '500',
+  },
+  controls: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  iconControls: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#374151',
+  },
+  iconButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 8,
+    borderRadius: 8,
+    minWidth: 70,
+  },
+  iconButtonActive: {
+    backgroundColor: '#374151',
+  },
+  iconLabel: {
+    color: '#6B7280',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  iconLabelActive: {
+    color: '#E5E7EB',
+  },
+  controlRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  controlColumn: {
+    paddingVertical: 8,
+  },
+  sliderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  sliderValue: {
+    color: '#22C55E',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  sliderContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  slider: {
+    flex: 1,
+    marginHorizontal: 12,
+    height: 40,
+  },
+  followDataContainer: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: '#3B82F6',
+  },
+  followHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  followTitle: {
+    color: '#3B82F6',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  followStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  followStat: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  followStatLabel: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  followStatValue: {
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  controlLabel: {
+    color: '#E5E7EB',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  detectionsContainer: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+  },
+  detectionsTitle: {
+    color: '#22C55E',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  detectionsList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  detectionBadge: {
+    backgroundColor: '#374151',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  detectionText: {
+    color: '#22C55E',
+    fontSize: 11,
+    fontWeight: '600',
   },
   webviewContainer: {
     flex: 1,
