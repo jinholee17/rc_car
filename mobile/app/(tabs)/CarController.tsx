@@ -14,7 +14,8 @@ import {
   PanResponderGestureState,
   TouchableOpacity,
 } from 'react-native';
-import Slider from '@react-native-community/slider';
+import { useDriveCommands } from '../../hooks/use-drive-commands';
+
 
 // Your Arduino HTTP server
 const ARDUINO_IP = '192.168.1.18';
@@ -39,6 +40,8 @@ const CarController: React.FC = () => {
   const [stickX, setStickX] = useState(0);
   const [stickY, setStickY] = useState(0);
 
+  const { sendDriveCommand } = useDriveCommands();
+
   // Derived PWM values (for display + sending)
   const [pwmUD, setPwmUD] = useState(0); // throttle (forward/back)
   const [pwmLR, setPwmLR] = useState(0); // steering (left/right)
@@ -52,31 +55,14 @@ const CarController: React.FC = () => {
   }, []);
 
   // Send HTTP request to Arduino /drive endpoint
-  const sendControlCommands = useCallback(
-    async (ud: number, lr: number) => {
-      const udClamped = clamp(ud, MAX_PWM);
-      const lrClamped = clamp(lr, MAX_PWM);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      sendDriveCommand(pwmUD, pwmLR);
+    }, 100);
+    return () => clearInterval(interval);
+  }, [pwmUD, pwmLR, sendDriveCommand]);
 
-      // optional: don't spam very small changes
-      if (
-        Math.abs(udClamped - lastSentUD.current) < 3 &&
-        Math.abs(lrClamped - lastSentLR.current) < 3
-      ) {
-        return;
-      }
-
-      lastSentUD.current = udClamped;
-      lastSentLR.current = lrClamped;
-
-      const url = `http://${ARDUINO_IP}:${PORT}/drive?ud=${udClamped}&lr=${lrClamped}`;
-      try {
-        await fetch(url);
-      } catch (e) {
-        console.log('Error sending drive command:', e);
-      }
-    },
-    [],
-  );
+  
 
   // Map joystick position → PWM values
   const updateFromStick = useCallback((x: number, y: number) => {
@@ -133,11 +119,11 @@ const CarController: React.FC = () => {
   // Periodically send the current joystick state
   useEffect(() => {
     const interval = setInterval(() => {
-      sendControlCommands(pwmUD, pwmLR);
+      sendDriveCommand(pwmUD, pwmLR);
     }, 100); // 100 ms → 10 times per second
 
     return () => clearInterval(interval);
-  }, [pwmUD, pwmLR, sendControlCommands]);
+  }, [pwmUD, pwmLR, sendDriveCommand]);
 
   // --- STOP button handler: reset to neutral and send 0,0 immediately ---
   const handleStop = useCallback(() => {
@@ -146,8 +132,8 @@ const CarController: React.FC = () => {
     setPwmUD(0);
     setPwmLR(0);
     // send immediate stop command
-    sendControlCommands(0, 0);
-  }, [sendControlCommands]);
+    sendDriveCommand(0, 0);
+  }, [sendDriveCommand]);
 
   return (
     <View style={styles.container}>

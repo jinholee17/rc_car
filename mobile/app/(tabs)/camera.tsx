@@ -1,8 +1,12 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Switch, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Slider from '@react-native-community/slider';
+import { useDriveCommands } from '../../hooks/use-drive-commands';
+import { useFocusEffect } from '@react-navigation/native';
+
+
 
 const CAMERA_URL = 'http://192.168.1.28';
 
@@ -177,6 +181,7 @@ const INJECTED_JAVASCRIPT = `
   }
   
   // Calculate auto-follow steering based on person detection
+  let follow_dead_zone = 0
   function calculateFollowData(predictions) {
     if (!autoFollowEnabled) return null;
     
@@ -211,13 +216,15 @@ const INJECTED_JAVASCRIPT = `
     
     // Determine if should drive forward
     // Drive if person is detected but not too close (area < 30% of screen)
-    const shouldDrive = areaRatio < 0.3;
+    const shouldDrive = areaRatio < 0.4 - follow_dead_zone;
+
+    follow_dead_zone = shouldDrive ? 0 : 0.1
     
     // Distance categories
     let distance = 'Far';
-    if (areaRatio > 0.25) distance = 'Very Close';
-    else if (areaRatio > 0.15) distance = 'Close';
-    else if (areaRatio > 0.08) distance = 'Medium';
+    if (areaRatio > 0.35) distance = 'Very Close';
+    else if (areaRatio > 0.25) distance = 'Close';
+    else if (areaRatio > 0.16) distance = 'Medium';
     
     return {
       turnAngle,
@@ -274,6 +281,7 @@ true;
 `;
 
 export default function CameraScreen() {
+  const { sendFollowCommand, stopCar } = useDriveCommands();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modelStatus, setModelStatus] = useState('');
@@ -288,6 +296,33 @@ export default function CameraScreen() {
     distance: string;
   } | null>(null);
   const webViewRef = useRef<WebView>(null);
+
+  // Send follow commands when data updates
+  useEffect(() => {
+    if (autoFollow && followData) {
+      sendFollowCommand(followData.turnAngle, followData.shouldDrive);
+    } else if (autoFollow && !followData) {
+      // No person detected - stop
+      stopCar();
+    }
+  }, [autoFollow, followData, sendFollowCommand, stopCar]);
+  
+   // Disable auto-follow when leaving this screen
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        // This runs when leaving the screen
+        if (autoFollow) {
+          setAutoFollow(false);
+          webViewRef.current?.postMessage(JSON.stringify({
+            type: 'toggleAutoFollow',
+            enabled: false
+          }));
+          stopCar(); // Stop the car immediately
+        }
+      };
+    }, [autoFollow, stopCar])
+  );
 
   const handleReload = () => {
     setLoading(true);
