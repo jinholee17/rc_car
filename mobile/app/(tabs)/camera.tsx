@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Switch } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Switch, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import Slider from '@react-native-community/slider';
 
 const CAMERA_URL = 'http://192.168.1.28';
 
@@ -212,6 +213,7 @@ export default function CameraScreen() {
   const [detections, setDetections] = useState<any[]>([]);
   const [detectionEnabled, setDetectionEnabled] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
+  const [ledBrightness, setLedBrightness] = useState(0);
   const webViewRef = useRef<WebView>(null);
 
   const handleReload = () => {
@@ -256,6 +258,18 @@ export default function CameraScreen() {
     }));
   };
 
+  const changeLedBrightness = async (value: number) => {
+    try {
+      // ESP32-CAM LED control endpoint
+      const response = await fetch(`${CAMERA_URL}/control?var=led_intensity&val=${Math.round(value)}`);
+      if (!response.ok) {
+        console.error('Failed to set LED brightness');
+      }
+    } catch (error) {
+      console.error('Error setting LED brightness:', error);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -293,6 +307,28 @@ export default function CameraScreen() {
             trackColor={{ false: '#374151', true: '#22C55E' }}
             thumbColor="#FFFFFF"
           />
+        </View>
+        <View style={styles.controlColumn}>
+          <View style={styles.sliderHeader}>
+            <Text style={styles.controlLabel}>LED Brightness</Text>
+            <Text style={styles.sliderValue}>{ledBrightness}</Text>
+          </View>
+          <View style={styles.sliderContainer}>
+            <MaterialIcons name="lightbulb-outline" size={18} color="#9CA3AF" />
+            <Slider
+              style={styles.slider}
+              minimumValue={0}
+              maximumValue={255}
+              step={1}
+              value={ledBrightness}
+              onValueChange={setLedBrightness}
+              onSlidingComplete={changeLedBrightness}
+              minimumTrackTintColor="#22C55E"
+              maximumTrackTintColor="#374151"
+              thumbTintColor="#22C55E"
+            />
+            <MaterialIcons name="lightbulb" size={18} color="#22C55E" />
+          </View>
         </View>
       </View>
 
@@ -427,6 +463,30 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 8,
+  },
+  controlColumn: {
+    paddingVertical: 8,
+  },
+  sliderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  sliderValue: {
+    color: '#22C55E',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  sliderContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  slider: {
+    flex: 1,
+    marginHorizontal: 12,
+    height: 40,
   },
   controlLabel: {
     color: '#E5E7EB',
