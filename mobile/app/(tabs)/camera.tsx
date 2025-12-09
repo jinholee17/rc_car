@@ -112,6 +112,7 @@ const INJECTED_JAVASCRIPT = `
   
   let detectionEnabled = true;
   let showLabels = true;
+  let autoFollowEnabled = false;
   
   // Listen for messages from React Native
   window.addEventListener('message', (event) => {
@@ -122,6 +123,9 @@ const INJECTED_JAVASCRIPT = `
       }
       if (data.type === 'toggleLabels') {
         showLabels = data.enabled;
+      }
+      if (data.type === 'toggleAutoFollow') {
+        autoFollowEnabled = data.enabled;
       }
     } catch (e) {}
   });
@@ -148,9 +152,12 @@ const INJECTED_JAVASCRIPT = `
       width *= scaleX;
       height *= scaleY;
       
+      // Highlight person in blue if auto-follow is enabled
+      const isTargetPerson = autoFollowEnabled && prediction.class === 'person';
+      
       // Draw bounding box
-      ctx.strokeStyle = '#00FF00';
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = isTargetPerson ? '#3B82F6' : '#00FF00';
+      ctx.lineWidth = isTargetPerson ? 4 : 3;
       ctx.strokeRect(x, y, width, height);
       
       if (showLabels) {
@@ -159,7 +166,7 @@ const INJECTED_JAVASCRIPT = `
         ctx.font = '16px Arial';
         const textWidth = ctx.measureText(label).width;
         
-        ctx.fillStyle = '#00FF00';
+        ctx.fillStyle = isTargetPerson ? '#3B82F6' : '#00FF00';
         ctx.fillRect(x, y - 25, textWidth + 10, 25);
         
         // Draw label text
@@ -167,6 +174,57 @@ const INJECTED_JAVASCRIPT = `
         ctx.fillText(label, x + 5, y - 7);
       }
     });
+  }
+  
+  // Calculate auto-follow steering based on person detection
+  function calculateFollowData(predictions) {
+    if (!autoFollowEnabled) return null;
+    
+    // Find the person with highest confidence
+    const people = predictions.filter(p => p.class === 'person');
+    if (people.length === 0) return null;
+    
+    const targetPerson = people.reduce((prev, current) => 
+      (prev.score > current.score) ? prev : current
+    );
+    
+    const [x, y, width, height] = targetPerson.bbox;
+    const centerX = x + width / 2;
+    const centerY = y + height / 2;
+    
+    // Get video dimensions
+    const videoWidth = videoElement.naturalWidth || videoElement.width;
+    const videoHeight = videoElement.naturalHeight || videoElement.height;
+    const videoCenterX = videoWidth / 2;
+    
+    // Calculate horizontal offset from center (-1 to 1)
+    const offsetX = (centerX - videoCenterX) / videoCenterX;
+    
+    // Convert to turn angle (-45 to 45 degrees)
+    const turnAngle = Math.round(offsetX * 45);
+    
+    // Calculate distance estimate based on bounding box size
+    // Larger box = closer, smaller box = farther
+    const boxArea = width * height;
+    const videoArea = videoWidth * videoHeight;
+    const areaRatio = boxArea / videoArea;
+    
+    // Determine if should drive forward
+    // Drive if person is detected but not too close (area < 30% of screen)
+    const shouldDrive = areaRatio < 0.3;
+    
+    // Distance categories
+    let distance = 'Far';
+    if (areaRatio > 0.25) distance = 'Very Close';
+    else if (areaRatio > 0.15) distance = 'Close';
+    else if (areaRatio > 0.08) distance = 'Medium';
+    
+    return {
+      turnAngle,
+      shouldDrive,
+      distance,
+      confidence: Math.round(targetPerson.score * 100)
+    };
   }
   
   // Run detection loop
@@ -180,6 +238,15 @@ const INJECTED_JAVASCRIPT = `
     try {
       const predictions = await model.detect(videoElement);
       drawDetections(predictions);
+      
+      // Calculate follow data if auto-follow is enabled
+      const followData = calculateFollowData(predictions);
+      if (followData) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'followData',
+          followData
+        }));
+      }
       
       // Send detection results to React Native
       if (predictions.length > 0) {
@@ -214,6 +281,12 @@ export default function CameraScreen() {
   const [detectionEnabled, setDetectionEnabled] = useState(true);
   const [showLabels, setShowLabels] = useState(true);
   const [ledBrightness, setLedBrightness] = useState(0);
+  const [autoFollow, setAutoFollow] = useState(false);
+  const [followData, setFollowData] = useState<{
+    turnAngle: number;
+    shouldDrive: boolean;
+    distance: string;
+  } | null>(null);
   const webViewRef = useRef<WebView>(null);
 
   const handleReload = () => {
@@ -234,6 +307,8 @@ export default function CameraScreen() {
         setDetections(data.objects);
       } else if (data.type === 'error') {
         setError(data.message);
+      } else if (data.type === 'followData') {
+        setFollowData(data.followData);
       }
     } catch (e) {
       console.error('Message parsing error:', e);
@@ -256,6 +331,18 @@ export default function CameraScreen() {
       type: 'toggleLabels',
       enabled: newValue
     }));
+  };
+
+  const toggleAutoFollow = () => {
+    const newValue = !autoFollow;
+    setAutoFollow(newValue);
+    webViewRef.current?.postMessage(JSON.stringify({
+      type: 'toggleAutoFollow',
+      enabled: newValue
+    }));
+    if (!newValue) {
+      setFollowData(null);
+    }
   };
 
   const changeLedBrightness = async (value: number) => {
@@ -290,24 +377,50 @@ export default function CameraScreen() {
       )}
 
       <View style={styles.controls}>
-        <View style={styles.controlRow}>
-          <Text style={styles.controlLabel}>Object Detection</Text>
-          <Switch
-            value={detectionEnabled}
-            onValueChange={toggleDetection}
-            trackColor={{ false: '#374151', true: '#22C55E' }}
-            thumbColor="#FFFFFF"
-          />
+        <View style={styles.iconControls}>
+          <TouchableOpacity
+            style={[styles.iconButton, detectionEnabled && styles.iconButtonActive]}
+            onPress={toggleDetection}
+            activeOpacity={0.7}>
+            <MaterialIcons 
+              name="visibility" 
+              size={24} 
+              color={detectionEnabled ? '#22C55E' : '#6B7280'} 
+            />
+            <Text style={[styles.iconLabel, detectionEnabled && styles.iconLabelActive]}>
+              Detect
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.iconButton, showLabels && styles.iconButtonActive]}
+            onPress={toggleLabels}
+            activeOpacity={0.7}>
+            <MaterialIcons 
+              name="label" 
+              size={24} 
+              color={showLabels ? '#22C55E' : '#6B7280'} 
+            />
+            <Text style={[styles.iconLabel, showLabels && styles.iconLabelActive]}>
+              Labels
+            </Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity
+            style={[styles.iconButton, autoFollow && styles.iconButtonActive]}
+            onPress={toggleAutoFollow}
+            activeOpacity={0.7}>
+            <MaterialIcons 
+              name="my-location" 
+              size={24} 
+              color={autoFollow ? '#3B82F6' : '#6B7280'} 
+            />
+            <Text style={[styles.iconLabel, autoFollow && styles.iconLabelActive]}>
+              Follow
+            </Text>
+          </TouchableOpacity>
         </View>
-        <View style={styles.controlRow}>
-          <Text style={styles.controlLabel}>Show Labels</Text>
-          <Switch
-            value={showLabels}
-            onValueChange={toggleLabels}
-            trackColor={{ false: '#374151', true: '#22C55E' }}
-            thumbColor="#FFFFFF"
-          />
-        </View>
+        
         <View style={styles.controlColumn}>
           <View style={styles.sliderHeader}>
             <Text style={styles.controlLabel}>LED Brightness</Text>
@@ -331,6 +444,42 @@ export default function CameraScreen() {
           </View>
         </View>
       </View>
+
+      {autoFollow && followData && (
+        <View style={styles.followDataContainer}>
+          <View style={styles.followHeader}>
+            <MaterialIcons name="my-location" size={20} color="#3B82F6" />
+            <Text style={styles.followTitle}>Auto Follow Active</Text>
+          </View>
+          <View style={styles.followStats}>
+            <View style={styles.followStat}>
+              <Text style={styles.followStatLabel}>Turn Angle</Text>
+              <Text style={[
+                styles.followStatValue,
+                { color: followData.turnAngle === 0 ? '#22C55E' : '#3B82F6' }
+              ]}>
+                {followData.turnAngle > 0 ? 'Right ' : followData.turnAngle < 0 ? 'Left ' : 'Center '}
+                {Math.abs(followData.turnAngle)}°
+              </Text>
+            </View>
+            <View style={styles.followStat}>
+              <Text style={styles.followStatLabel}>Drive</Text>
+              <Text style={[
+                styles.followStatValue,
+                { color: followData.shouldDrive ? '#22C55E' : '#EF4444' }
+              ]}>
+                {followData.shouldDrive ? 'Forward' : 'Stop'}
+              </Text>
+            </View>
+            <View style={styles.followStat}>
+              <Text style={styles.followStatLabel}>Distance</Text>
+              <Text style={styles.followStatValue}>
+                {followData.distance}
+              </Text>
+            </View>
+          </View>
+        </View>
+      )}
 
       {detections.length > 0 && detectionEnabled && (
         <View style={styles.detectionsContainer}>
@@ -458,6 +607,33 @@ const styles = StyleSheet.create({
     padding: 12,
     marginBottom: 12,
   },
+  iconControls: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#374151',
+  },
+  iconButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 8,
+    borderRadius: 8,
+    minWidth: 70,
+  },
+  iconButtonActive: {
+    backgroundColor: '#374151',
+  },
+  iconLabel: {
+    color: '#6B7280',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+  iconLabelActive: {
+    color: '#E5E7EB',
+  },
   controlRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -487,6 +663,42 @@ const styles = StyleSheet.create({
     flex: 1,
     marginHorizontal: 12,
     height: 40,
+  },
+  followDataContainer: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 2,
+    borderColor: '#3B82F6',
+  },
+  followHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  followTitle: {
+    color: '#3B82F6',
+    fontSize: 14,
+    fontWeight: '600',
+    marginLeft: 8,
+  },
+  followStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  followStat: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  followStatLabel: {
+    color: '#9CA3AF',
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  followStatValue: {
+    fontSize: 16,
+    fontWeight: '700',
   },
   controlLabel: {
     color: '#E5E7EB',
