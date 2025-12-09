@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Switch } f
 import { WebView } from 'react-native-webview';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 
-const CAMERA_URL = 'http://172.20.10.4';
+const CAMERA_URL = 'http://192.168.1.28';
 
 // Injected JavaScript that runs TensorFlow.js object detection
 const INJECTED_JAVASCRIPT = `
