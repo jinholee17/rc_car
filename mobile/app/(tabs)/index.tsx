@@ -2,7 +2,6 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react';
 import {
@@ -20,13 +19,6 @@ import { useDriveCommands } from '../../hooks/use-drive-commands';
 // Your Arduino HTTP server
 const ARDUINO_IP = '192.168.1.18';
 const PORT = 8080;
-
-// Helper: clamp a value to [-max, max]
-function clamp(val: number, max: number): number {
-  if (val > max) return max;
-  if (val < -max) return -max;
-  return val;
-}
 
 // ---------------- Joystick-based UI ----------------
 
