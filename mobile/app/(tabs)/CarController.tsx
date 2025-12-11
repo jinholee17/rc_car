@@ -165,9 +165,11 @@ const CarController: React.FC = () => {
         </Text>
 
         {/* Square joystick area */}
-        <View style={styles.joystickOuter} 
-        testID="joystick-area"
-        {...panResponder.panHandlers}>
+        <View
+          style={styles.joystickOuter}
+          testID="joystick-area"
+          {...panResponder.panHandlers}
+        >
           {/* Crosshair lines */}
           <View style={styles.joystickVerticalLine} />
           <View style={styles.joystickHorizontalLine} />
@@ -189,11 +191,15 @@ const CarController: React.FC = () => {
         <View style={styles.valuesRow}>
           <View style={styles.valueBox}>
             <Text style={styles.valueLabel}>Throttle (PWM_UD)</Text>
-            <Text style={styles.valueText}>{pwmUD}</Text>
+            <Text style={styles.valueText} testID="pwm-ud-value">
+              {pwmUD}
+            </Text>
           </View>
           <View style={styles.valueBox}>
             <Text style={styles.valueLabel}>Steering (PWM_LR)</Text>
-            <Text style={styles.valueText}>{pwmLR}</Text>
+            <Text style={styles.valueText} testID="pwm-lr-value">
+              {pwmLR}
+            </Text>
           </View>
         </View>
 
