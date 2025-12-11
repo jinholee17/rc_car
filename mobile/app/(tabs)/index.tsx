@@ -104,15 +104,6 @@ const CarController: React.FC = () => {
     [updateFromStick],
   );
 
-  // Periodically send the current joystick state
-  useEffect(() => {
-    const interval = setInterval(() => {
-      sendDriveCommand(pwmUD, pwmLR);
-    }, 100); // 100 ms → 10 times per second
-
-    return () => clearInterval(interval);
-  }, [pwmUD, pwmLR, sendDriveCommand]);
-
   // --- STOP button handler: reset to neutral and send 0,0 immediately ---
   const handleStop = useCallback(() => {
     setStickX(0);
@@ -163,11 +154,11 @@ const CarController: React.FC = () => {
         <View style={styles.valuesRow}>
           <View style={styles.valueBox}>
             <Text style={styles.valueLabel}>Throttle (PWM_UD)</Text>
-            <Text style={styles.valueText}>{pwmUD}</Text>
+            <Text style={styles.valueText} testID="pwm-ud-value">{pwmUD}</Text>
           </View>
           <View style={styles.valueBox}>
             <Text style={styles.valueLabel}>Steering (PWM_LR)</Text>
-            <Text style={styles.valueText}>{pwmLR}</Text>
+            <Text style={styles.valueText} testID="pwm-lr-value">{pwmLR}</Text>
           </View>
         </View>
 
