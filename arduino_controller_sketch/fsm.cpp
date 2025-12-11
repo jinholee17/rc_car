@@ -37,8 +37,9 @@ full_state updateFSM(full_state currState,
 
       // Forward safety
       if (wantsForward && tooClose) {
-        // block forward
+      
         next.throttle = 0;
+
       } else if (wantsForward && clearAgain) {
         // only allow forward if we are clearly far enough
         next.throttle = cmdThrottle;
